@@ -134,23 +134,35 @@ class RateLimitPolicy:
     server's own "retry in Ns" hint when longer. Any other error (bad
     request, bad key …) is raised at once — the agent abstains, as before.
 
+    A 429 whose server hint asks for more than *max_hint* seconds ("Please
+    retry in 44m10s", retry_delay { seconds: 2650 }) is not retried: the
+    agent abstains at once instead of sleeping through six backoffs. When it
+    is the free tier's *daily* quota (quota_id …PerDay…), that is logged as
+    such, and further calls to the same model fail fast — without spending
+    a request — until the hinted time has passed.
+
     Tunable from the environment: LLM_MAX_CONCURRENCY (default 1),
     LLM_MAX_RETRIES (6), LLM_TRANSIENT_RETRIES (3), LLM_RETRY_BASE_SECONDS (5),
-    LLM_RETRY_MAX_SECONDS (120).
+    LLM_RETRY_MAX_SECONDS (120), LLM_MAX_RETRY_HINT_SECONDS (60).
     """
 
     _semaphores: dict[int, threading.BoundedSemaphore] = {}
     _lock = threading.Lock()
+    # model → monotonic time until which its daily quota is known spent (process wide)
+    _exhausted: dict[str, float] = {}
 
     def __init__(self, max_concurrency: int = 1, max_retries: int = 6, base_delay: float = 5.0,
                  max_delay: float = 120.0, sleep: Callable[[float], None] = time.sleep,
-                 transient_retries: int = 3) -> None:
+                 transient_retries: int = 3, max_hint: float = 60.0,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         self.max_concurrency = max(1, max_concurrency)
         self.max_retries = max(0, max_retries)
         self.transient_retries = max(0, transient_retries)
         self.base_delay = base_delay
         self.max_delay = max_delay
+        self.max_hint = max_hint
         self._sleep = sleep
+        self._clock = clock
         with self._lock:
             self._gate = self._semaphores.setdefault(
                 self.max_concurrency, threading.BoundedSemaphore(self.max_concurrency))
@@ -161,17 +173,29 @@ class RateLimitPolicy:
             max_concurrency=int(os.environ.get("LLM_MAX_CONCURRENCY", "1")),
             max_retries=int(os.environ.get("LLM_MAX_RETRIES", "6")),
             transient_retries=int(os.environ.get("LLM_TRANSIENT_RETRIES", "3")),
+            max_hint=float(os.environ.get("LLM_MAX_RETRY_HINT_SECONDS", "60")),
             base_delay=float(os.environ.get("LLM_RETRY_BASE_SECONDS", "5")),
             max_delay=float(os.environ.get("LLM_RETRY_MAX_SECONDS", "120")),
         )
 
     def call(self, fn: Callable[[], str], model: str = "") -> str:
         with self._gate:
+            until = self._exhausted.get(model)
+            if until is not None:
+                if self._clock() < until:
+                    raise QuotaExhausted(
+                        f"{model}: 하루 무료 한도 소진 — 약 {(until - self._clock()) / 60:.0f}분 뒤까지 호출하지 않음 "
+                        "(429 daily quota; skipped without a request)")
+                self._exhausted.pop(model, None)
             limited = transient = 0
             while True:
                 try:
                     return fn()
                 except Exception as exc:
+                    hint = retry_hint_seconds(str(exc)) if is_rate_limited(exc) else None
+                    if hint is not None and hint > self.max_hint:
+                        self._give_up(model, exc, hint)
+                        raise
                     if is_rate_limited(exc) and limited < self.max_retries:
                         delay = self.delay(limited, str(exc))
                         limited += 1
@@ -186,12 +210,54 @@ class RateLimitPolicy:
                         raise
                     self._sleep(delay)
 
+    def _give_up(self, model: str, exc: BaseException, hint: float) -> None:
+        minutes = hint / 60
+        if is_daily_quota(str(exc)):
+            limit = re.search(r"quota_value:\s*(\d+)|limit:\s*(\d+)", str(exc))
+            count = next((g for g in limit.groups() if g), None) if limit else None
+            self._exhausted[model] = self._clock() + hint
+            logger.error("%s: Gemini 하루 무료 한도%s를 다 썼습니다 (429, 일일 한도). 약 %.0f분 뒤에 풀립니다. "
+                         "재시도하지 않고 이 호출은 기권하며, 그때까지 이 모델의 다른 호출도 요청 없이 기권합니다. "
+                         "다른 모델로 바꾸려면 HEDGE_FUND_LLM_MODEL=gemini-flash-lite-latest",
+                         model, f"({count}회)" if count else "", minutes)
+        else:
+            logger.warning("%s: 429 rate-limited and the server asks to wait %.0fs (> %.0fs); "
+                           "not retrying — this call abstains", model, hint, self.max_hint)
+
     def delay(self, attempt: int, message: str = "") -> float:
         backoff = min(self.max_delay, self.base_delay * (2 ** attempt))
-        hint = re.search(r"retry in ([0-9.]+)\s*s", message, re.IGNORECASE)
-        if hint:
-            backoff = max(backoff, min(self.max_delay, float(hint.group(1))))
+        hint = retry_hint_seconds(message)
+        if hint is not None:
+            backoff = max(backoff, min(self.max_delay, hint))
         return backoff + random.uniform(0, 1)
+
+
+class QuotaExhausted(RuntimeError):
+    """A model's daily quota is known to be spent: the call is not even sent."""
+
+
+_HINT_TEXT = re.compile(r"retry in\s+((?:\d+(?:\.\d+)?\s*[hms]\s*)+)", re.IGNORECASE)
+_HINT_PROTO = re.compile(r"retry_delay\s*\{\s*seconds:\s*(\d+)", re.IGNORECASE)
+
+
+def retry_hint_seconds(message: str) -> float | None:
+    """The wait a 429 asks for, in seconds: "Please retry in 37.2s",
+    "retry in 44m10.16s", "retry in 1h2m", or the proto field
+    retry_delay { seconds: 2650 }. The longest one found; None when absent."""
+    found: list[float] = []
+    for match in _HINT_TEXT.finditer(message):
+        total = 0.0
+        for amount, unit in re.findall(r"(\d+(?:\.\d+)?)\s*([hms])", match.group(1), re.IGNORECASE):
+            total += float(amount) * {"h": 3600, "m": 60, "s": 1}[unit.lower()]
+        found.append(total)
+    found += [float(m.group(1)) for m in _HINT_PROTO.finditer(message)]
+    return max(found) if found else None
+
+
+def is_daily_quota(message: str) -> bool:
+    """The free tier's per-day request quota (not the per-minute one)."""
+    text = message.lower()
+    return "perday" in text or "per day" in text
 
 
 def is_rate_limited(exc: BaseException) -> bool:

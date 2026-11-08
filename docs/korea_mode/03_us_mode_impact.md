@@ -11,6 +11,8 @@
 | 스냅샷에 P/B 열 추가 | **있음** (백테스트·모의투자 모두) | 프롬프트 문구가 바뀌어 LLM 응답이 달라질 수 있음. 첫 실행은 LLM 캐시 미스 | — |
 | 데이터 캐시 버전(`cache_version`) | 없음 | 아니오. 미국 `FDClient`에는 속성이 없어 캐시 키 그대로 | — |
 | 일시적 오류 재시도·Gemini 제한 시간 | 미국 기본 모델(Anthropic)은 없음. **Gemini를 쓸 때만** 있음 | 아니오 (실패하던 호출이 재시도로 성공할 수 있음) | `LLM_TRANSIENT_RETRIES=0`, `GEMINI_TIMEOUT_SECONDS=60` |
+| 긴 대기(>60초) 429는 바로 기권, 하루 한도 소진 시 빠른 기권 | **Gemini를 쓸 때만** 있음 | 6번 재시도해도 실패할 호출이 바로 기권 (결과는 같고 시간만 줄어듦) | `LLM_MAX_RETRY_HINT_SECONDS=100000` |
+| `CompanyFacts.industry_code` 필드, 금융업 부채비율 설명 | 없음 | 아니오. 미국 API는 이 필드를 보내지 않아 `None`이고, 설명이 없으면 스냅샷 해시에서도 빠진다 | — |
 | 모의투자(paper) 거래일 기준 | 없음 | 아니오. `is_kr_mode()`일 때만 적용 | — |
 
 ## 1. 백테스트 평가일 = 거래일만
@@ -51,7 +53,13 @@ LLM_TRANSIENT_RETRIES=0
 GEMINI_TIMEOUT_SECONDS=60
 ```
 
-## 5. 한국 모드 전용 (미국 모드 영향 없음)
+## 5. 금융업 부채비율 설명
+
+- `CompanyFacts`에 `industry_code`(DART 업종코드) 필드가 생겼다. 미국 Financial Datasets 응답에는 없으므로 항상 `None`이다.
+- 설명은 `location == "KR"`이고 업종코드가 64·65·66으로 시작할 때만 붙는다. 미국 은행(예: JPM)에는 붙지 않는다.
+- `FundamentalsSnapshot.leverage_note`가 `None`이면 `content_hash` 계산에서 빠지므로, 미국 스냅샷 해시는 이 변경 전과 같다(`test_us_snapshots_have_no_leverage_note_and_hash_as_before`).
+
+## 6. 한국 모드 전용 (미국 모드 영향 없음)
 
 | 변경 | 적용 조건 |
 |---|---|

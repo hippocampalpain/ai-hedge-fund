@@ -52,8 +52,8 @@ class KRDataClient:
     # Disk-cache generation for CachedDataClient. Bump whenever a derived
     # number changes meaning, so answers cached under old formulas are not
     # replayed. 2: newest row priced on the evaluation date; EPS on weighted
-    # average issued shares.
-    cache_version = "kr-2"
+    # average issued shares. 3: CompanyFacts.industry_code (DART 업종코드).
+    cache_version = "kr-3"
 
     def __init__(
         self,
@@ -224,8 +224,9 @@ class KRDataClient:
             _log_once("listing", ticker, "KRX 종목 목록을 받지 못해 업종 정보를 비워 둡니다: %s", str(exc)[:150],
                       level=logging.WARNING)
             row = None
+        code = self._industry_code(ticker)
         if row is None:
-            return CompanyFacts(ticker=ticker)
+            return CompanyFacts(ticker=ticker, location="KR", industry_code=code)
         industry = row.get("industry")
         return CompanyFacts(
             ticker=ticker,
@@ -235,7 +236,20 @@ class KRDataClient:
             industry=industry,
             exchange=row.get("market"),
             location="KR",
+            industry_code=code,
         )
+
+    def _industry_code(self, ticker: str) -> str | None:
+        """DART 기업개황의 업종코드(KSIC). 받지 못하면 None (금융업 설명이 붙지 않을 뿐)."""
+        try:
+            corp = self.corp_code(ticker)
+            info = self._dart.company(corp) if corp else None
+        except KRDataError as exc:
+            _log_once("induty", ticker, "%s: DART 업종코드를 받지 못했습니다: %s", ticker, str(exc)[:150],
+                      level=logging.WARNING)
+            return None
+        code = str((info or {}).get("induty_code") or "").strip()
+        return code or None
 
     def get_insider_trades(self, ticker, end_date, start_date=None, limit=1000) -> list[InsiderTrade]:
         """DART 임원·주요주주 소유보고 → InsiderTrade. DART gives the change in

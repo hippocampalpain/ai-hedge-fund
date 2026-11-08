@@ -155,3 +155,85 @@ def test_us_default_is_unchanged(monkeypatch):
     monkeypatch.delenv("HEDGE_FUND_LLM_MODEL", raising=False)
     llm = make_llm()
     assert llm.model == "claude-opus-5-5" and llm._rate_limit is None
+
+
+# The message Google sent when the free tier's daily quota ran out (2026-11-08).
+DAILY_QUOTA = """429 You exceeded your current quota, please check your plan and billing details.
+* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3.8-flash, description: Generate content requests per day limit exceeded on Free Tier.
+Please retry in 44m10.167255338s. [links {
+, violations {
+  quota_id: "GenerateRequestsPerDayPerProjectPerModel-FreeTier"
+  quota_value: 20
+}
+, retry_delay {
+  seconds: 2650
+}
+]"""
+
+
+def test_retry_hints_are_read_in_every_form():
+    from hedge_fund.llm.client import retry_hint_seconds
+    assert retry_hint_seconds("Please retry in 37.2s.") == pytest.approx(37.2)
+    assert retry_hint_seconds(DAILY_QUOTA) == pytest.approx(44 * 60 + 10.167255338)
+    assert retry_hint_seconds("retry in 1h2m") == 3720
+    assert retry_hint_seconds("retry_delay {\n  seconds: 90\n}") == 90
+    assert retry_hint_seconds("429 RESOURCE_EXHAUSTED") is None
+
+
+def test_a_long_server_wait_abstains_at_once_and_logs_the_daily_quota(caplog):
+    import logging
+    from hedge_fund.llm.client import QuotaExhausted
+    calls, waits = [], []
+    now = [1000.0]
+
+    def spent():
+        calls.append(1)
+        raise ResourceExhausted(DAILY_QUOTA)
+
+    policy = RateLimitPolicy(sleep=waits.append, clock=lambda: now[0])
+    with caplog.at_level(logging.ERROR), pytest.raises(ResourceExhausted):
+        policy.call(spent, "test-daily-model")
+    assert len(calls) == 1 and waits == []                        # no backoff, no sleep
+    assert "하루 무료 한도(20회)를 다 썼습니다" in caplog.text and "44분" in caplog.text
+    # the next call to the same model is refused without a request…
+    with pytest.raises(QuotaExhausted, match="하루 무료 한도 소진"):
+        policy.call(spent, "test-daily-model")
+    assert len(calls) == 1
+    # …until the hinted time has passed
+    now[0] += 2700
+    with pytest.raises(ResourceExhausted):
+        policy.call(spent, "test-daily-model")
+    assert len(calls) == 2
+    RateLimitPolicy._exhausted.clear()
+
+
+def test_a_long_per_minute_wait_also_abstains_but_does_not_block_the_model():
+    calls = []
+
+    def busy():
+        calls.append(1)
+        raise ResourceExhausted("429 RESOURCE_EXHAUSTED. Please retry in 90s.")
+
+    policy = RateLimitPolicy(sleep=lambda s: None)
+    for _ in range(2):
+        with pytest.raises(ResourceExhausted):
+            policy.call(busy, "test-minute-model")
+    assert len(calls) == 2 and "test-minute-model" not in RateLimitPolicy._exhausted
+
+
+def test_a_short_server_wait_is_still_retried():
+    waits, calls = [], []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) < 2:
+            raise ResourceExhausted("429 RESOURCE_EXHAUSTED. Please retry in 37.2s.")
+        return "ok"
+
+    assert RateLimitPolicy(sleep=waits.append).call(flaky) == "ok"
+    assert len(waits) == 1 and 37 <= waits[0] < 39
+
+
+def test_the_hint_limit_comes_from_the_environment(monkeypatch):
+    monkeypatch.setenv("LLM_MAX_RETRY_HINT_SECONDS", "300")
+    assert RateLimitPolicy.from_env().max_hint == 300

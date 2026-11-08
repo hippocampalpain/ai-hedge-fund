@@ -271,3 +271,17 @@ def test_price_to_book_is_shown_outright_in_both_renders():
         header = next(line for line in text.splitlines() if "P/E" in line).split(" | ")
         row = next(line for line in text.splitlines() if "12.04" in line).split(" | ")
         assert header[header.index("P/B")] == "P/B" and row[header.index("P/B")] == "2.51"
+
+
+
+def test_us_snapshots_have_no_leverage_note_and_hash_as_before():
+    """The 금융업 note is Korean-mode only: a US company (no location/industry_code)
+    renders no note, and the hash ignores the empty field."""
+    import hashlib
+    from hedge_fund.features.snapshot import FundamentalsSnapshot, PeriodFundamentals
+
+    snap = FundamentalsSnapshot(ticker="JPM", as_of="2025-10-23", sector="Financials",
+                                periods=[PeriodFundamentals(report_period="2025-06-30", debt_to_equity=9.5)])
+    assert snap.leverage_note is None and "금융업" not in snap.render() and "금융업" not in snap.render(blind=True)
+    legacy = snap.model_dump_json(exclude={"as_of", "leverage_note"})
+    assert snap.content_hash == hashlib.sha256(legacy.encode()).hexdigest()[:24]

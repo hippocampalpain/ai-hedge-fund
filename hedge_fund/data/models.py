@@ -186,6 +186,9 @@ class CompanyFacts(BaseModel):
     sic_code: str | None = None
     sic_industry: str | None = None
     sic_sector: str | None = None
+    # Korean mode only: DART 기업개황 업종코드 (KSIC, e.g. 64992 금융지주회사).
+    # The US API never sends it, so it stays None there.
+    industry_code: str | None = None
 
 
 # ---------------------------------------------------------------------------

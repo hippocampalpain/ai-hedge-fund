@@ -95,8 +95,10 @@ def share_rows(quarter: int, issued: float | None = None) -> list[dict]:
 class FakeDart:
     """In-memory DartClient: no network."""
 
-    def __init__(self, *, years=(2023, 2024), fs_div="CFS", acc_mt="12", insiders=None, issued=None, **kw):
+    def __init__(self, *, years=(2023, 2024), fs_div="CFS", acc_mt="12", insiders=None, issued=None,
+                 induty_code="264", **kw):
         self.kw = kw
+        self.induty_code = induty_code
         self.issued = issued or {}  # (year, quarter) → 발행주식총수
         self.years = years
         self.fs_div = fs_div
@@ -108,7 +110,7 @@ class FakeDart:
         return [{"corp_code": "00000001", "corp_name": "테스트전자", "stock_code": "123450"}]
 
     def company(self, corp):
-        return {"acc_mt": self.acc_mt}
+        return {"acc_mt": self.acc_mt, "induty_code": self.induty_code}
 
     def financial_statements(self, corp, year, reprt, fs_div):
         self.calls.append((year, reprt, fs_div))
@@ -753,7 +755,7 @@ def test_falling_back_to_naver_closes_is_a_warning(tmp_path, caplog):
 
 
 def test_korean_client_names_its_metrics_cache_version():
-    assert KRDataClient.cache_version == "kr-2"
+    assert KRDataClient.cache_version == "kr-3"
 
 
 # ---------------------------------------------------------------------------
@@ -834,3 +836,36 @@ def test_forced_views_trade_at_the_krx_close_and_score_against_kospi(tmp_path):
     assert m.benchmark_return_pct == pytest.approx(2_560 / 2_500 - 1, abs=1e-6)
     assert m.excess_return_pct == pytest.approx(m.total_return_pct - m.benchmark_return_pct, abs=1e-6)
     assert m.trading_cost == pytest.approx(fill.quantity * (52_000 * 0.00015 + 56_000 * (0.00015 + 0.002)))
+
+
+
+# ---------------------------------------------------------------------------
+# 금융업 부채비율 설명 (DART 업종코드)
+# ---------------------------------------------------------------------------
+
+def test_financial_industry_is_read_from_the_ksic_code():
+    from hedge_fund.data.kr.symbols import is_financial_industry
+    assert is_financial_industry("64992")      # 금융지주회사 (KB금융, 하나금융)
+    assert is_financial_industry("64110")      # 은행
+    assert is_financial_industry("65110")      # 생명보험
+    assert is_financial_industry("66121")      # 증권 중개
+    assert not is_financial_industry("264")    # 삼성전자 (통신·방송장비)
+    assert not is_financial_industry("71511")  # 비금융 지주회사(회사본부)
+    assert not is_financial_industry(None) and not is_financial_industry("")
+
+
+def test_company_facts_carry_the_dart_industry_code(tmp_path):
+    facts = _client(tmp_path, dart=FakeDart(induty_code="64992")).get_company_facts("123450")
+    assert (facts.location, facts.industry_code) == ("KR", "64992")
+
+
+@pytest.mark.parametrize("blind", [True, False])
+def test_a_financial_companys_prompt_explains_its_debt_to_equity(tmp_path, blind):
+    from hedge_fund.features.snapshot import build_snapshot
+    bank = build_snapshot("123450", "2025-06-30", _client(tmp_path / "b", dart=FakeDart(induty_code="64992")))
+    maker = build_snapshot("123450", "2025-06-30", _client(tmp_path / "m"))
+    note = "금융업은 예금·보험부채가 부채로 잡혀 부채비율이 구조적으로 높음"
+    line = next(l for l in bank.render(blind=blind).splitlines() if "Debt/equity (latest)" in l)
+    assert note in line                                      # right beside the number
+    assert note not in maker.render(blind=blind)
+    assert bank.content_hash != maker.content_hash           # a different prompt, a different cache key

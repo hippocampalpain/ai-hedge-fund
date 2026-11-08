@@ -32,6 +32,24 @@ CODE_PATTERN = re.compile(r"^\d{4}[0-9A-Z]{2}$")
 LISTING_MAX_AGE = 86400
 
 
+# 한국표준산업분류(KSIC) 대분류 K "금융 및 보험업": 64 금융업(은행·금융지주 포함),
+# 65 보험 및 연금업, 66 금융 및 보험 관련 서비스업(증권 중개 등). DART 기업개황의
+# induty_code가 이 코드다 (예: KB금융지주·하나금융지주 64992 금융지주회사).
+FINANCIAL_KSIC_PREFIXES = ("64", "65", "66")
+
+FINANCIAL_LEVERAGE_NOTE = (
+    "금융업은 예금·보험부채가 부채로 잡혀 부채비율이 구조적으로 높음 "
+    "(financial company: deposits and insurance liabilities are booked as liabilities, "
+    "so debt/equity is structurally high — judge leverage against banks/insurers, not industrial firms)"
+)
+
+
+def is_financial_industry(induty_code: str | None) -> bool:
+    """은행·증권·보험 등 금융업인지, DART 업종코드(KSIC)로 판단한다."""
+    code = (induty_code or "").strip()
+    return code.isdigit() and code.startswith(FINANCIAL_KSIC_PREFIXES)
+
+
 def is_index(symbol: str) -> bool:
     return symbol.upper() in INDICES
 

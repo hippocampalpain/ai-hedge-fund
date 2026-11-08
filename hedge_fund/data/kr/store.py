@@ -103,7 +103,7 @@ def with_retry(
     base_delay: float = 2.0,
     retry_on: tuple[type[BaseException], ...] = (Exception,),
     secrets: list[str | None] = (),
-    sleep: Callable[[float], None] = time.sleep,
+    sleep: Callable[[float], None] | None = None,
 ) -> Any:
     """Call *fn*; on a retryable exception wait base, 2×base, 4×base … and
     try again. The final failure is raised as KRDataError with secrets
@@ -119,5 +119,5 @@ def with_retry(
                 raise KRDataError(f"{what} failed after {retries + 1} attempts: {message[:300]}") from None
             delay = base_delay * (2 ** attempt)
             logger.info("%s failed (%s); retrying in %.0fs", what, message[:120], delay)
-            sleep(delay)
+            (sleep or time.sleep)(delay)
     raise AssertionError("unreachable")

@@ -19,6 +19,7 @@ from rich.text import Text
 
 from hedge_fund.backtesting import performance_metrics
 from hedge_fund.data import FDClient, FDClientError, has_data_credential, PriceSnapshot
+from hedge_fund.data.provider import is_kr_mode, make_data_client
 from hedge_fund.data.bars import bar_time, bars_per_day, is_intraday
 from hedge_fund.data.sessions import NEW_YORK
 from hedge_fund.fund import FundSpec
@@ -39,6 +40,14 @@ _PERIOD_WORD = {"daily": "day", "weekly": "week", "monthly": "month"}
 # The reason the app's `h` writes to the kill switch. The ledger wants one for
 # `aihf paper status` and the event log; the app does not ask, so it is not shown.
 APP_HALT = "halted in the app"
+
+
+def _data_client():
+    """FDClient, or the Korean provider when DATA_PROVIDER=kr. FDClient is
+    looked up at call time so tests that patch this module's FDClient work."""
+    if is_kr_mode():
+        return make_data_client()
+    return FDClient()
 
 
 LIVE_REFRESH = 30  # seconds between quote refreshes while the paper list is up
@@ -305,7 +314,7 @@ def fetch_snapshots(tickers: list[str]) -> dict[str, PriceSnapshot]:
         return {}
     quotes: dict[str, PriceSnapshot] = {}
     try:
-        with FDClient() as fd, ThreadPoolExecutor(max_workers=min(8, len(tickers))) as pool:
+        with _data_client() as fd, ThreadPoolExecutor(max_workers=min(8, len(tickers))) as pool:
             for ticker, snapshot in zip(tickers, pool.map(fd.get_snapshot, tickers)):
                 if snapshot is not None:
                     quotes[ticker] = snapshot

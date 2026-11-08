@@ -14,9 +14,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
+import random
 import re
+import threading
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -34,6 +37,13 @@ from hedge_fund.llm.registry import (
 )
 
 DEFAULT_MODEL = "claude-opus-5-5"
+# Korean mode (DATA_PROVIDER=kr) defaults to a free-tier Gemini Flash model.
+# "-latest" aliases track Google's current Flash release, so the default does
+# not go stale. Override with HEDGE_FUND_LLM_MODEL or --model
+# (e.g. gemini-flash-lite-latest for higher free-tier limits).
+KR_DEFAULT_MODEL = "gemini-flash-latest"
+
+logger = logging.getLogger(__name__)
 
 # Called with each piece of text as it arrives. None means don't stream.
 TokenListener = Callable[[str], None] | None
@@ -81,12 +91,19 @@ class ChatLLM:
     the prompt cache, and the parse are untouched by it.
     """
 
-    def __init__(self, model: str, chat, on_token: TokenListener = None) -> None:
+    def __init__(self, model: str, chat, on_token: TokenListener = None,
+                 rate_limit: RateLimitPolicy | None = None) -> None:
         self.model = model
         self._chat = chat
         self._on_token = on_token
+        self._rate_limit = rate_limit
 
     def complete(self, system: str, user: str) -> str:
+        if self._rate_limit is None:
+            return self._complete(system, user)
+        return self._rate_limit.call(lambda: self._complete(system, user), self.model)
+
+    def _complete(self, system: str, user: str) -> str:
         messages = [("system", system), ("human", user)]
         if self._on_token is None:
             return _flatten(self._chat.invoke(messages).content)
@@ -101,6 +118,70 @@ class ChatLLM:
                 parts.append(text)
                 self._on_token(text)
         return "".join(parts)
+
+
+class RateLimitPolicy:
+    """Free-tier guard: at most *max_concurrency* calls in flight (process
+    wide, across threads) and exponential backoff on 429 / RESOURCE_EXHAUSTED.
+
+    Delay before retry n (0-based) is min(max_delay, base_delay * 2**n) plus
+    up to 1s of jitter, or the server's own "retry in Ns" hint when longer.
+    Any other error is raised at once — the agent abstains, as before.
+
+    Tunable from the environment: LLM_MAX_CONCURRENCY (default 1),
+    LLM_MAX_RETRIES (6), LLM_RETRY_BASE_SECONDS (5), LLM_RETRY_MAX_SECONDS (120).
+    """
+
+    _semaphores: dict[int, threading.BoundedSemaphore] = {}
+    _lock = threading.Lock()
+
+    def __init__(self, max_concurrency: int = 1, max_retries: int = 6, base_delay: float = 5.0,
+                 max_delay: float = 120.0, sleep: Callable[[float], None] = time.sleep) -> None:
+        self.max_concurrency = max(1, max_concurrency)
+        self.max_retries = max(0, max_retries)
+        self.base_delay = base_delay
+        self.max_delay = max_delay
+        self._sleep = sleep
+        with self._lock:
+            self._gate = self._semaphores.setdefault(
+                self.max_concurrency, threading.BoundedSemaphore(self.max_concurrency))
+
+    @classmethod
+    def from_env(cls) -> RateLimitPolicy:
+        return cls(
+            max_concurrency=int(os.environ.get("LLM_MAX_CONCURRENCY", "1")),
+            max_retries=int(os.environ.get("LLM_MAX_RETRIES", "6")),
+            base_delay=float(os.environ.get("LLM_RETRY_BASE_SECONDS", "5")),
+            max_delay=float(os.environ.get("LLM_RETRY_MAX_SECONDS", "120")),
+        )
+
+    def call(self, fn: Callable[[], str], model: str = "") -> str:
+        with self._gate:
+            for attempt in range(self.max_retries + 1):
+                try:
+                    return fn()
+                except Exception as exc:
+                    if not is_rate_limited(exc) or attempt == self.max_retries:
+                        raise
+                    delay = self.delay(attempt, str(exc))
+                    logger.warning("%s rate-limited (429/RESOURCE_EXHAUSTED); retry %d/%d in %.0fs",
+                                   model, attempt + 1, self.max_retries, delay)
+                    self._sleep(delay)
+        raise AssertionError("unreachable")
+
+    def delay(self, attempt: int, message: str = "") -> float:
+        backoff = min(self.max_delay, self.base_delay * (2 ** attempt))
+        hint = re.search(r"retry in ([0-9.]+)\s*s", message, re.IGNORECASE)
+        if hint:
+            backoff = max(backoff, min(self.max_delay, float(hint.group(1))))
+        return backoff + random.uniform(0, 1)
+
+
+def is_rate_limited(exc: BaseException) -> bool:
+    """429 / RESOURCE_EXHAUSTED, however the SDK wraps it."""
+    text = f"{type(exc).__name__} {exc}"
+    return ("429" in text or "RESOURCE_EXHAUSTED" in text or "ResourceExhausted" in text
+            or "rate limit" in text.lower())
 
 
 class JevLLM:
@@ -234,8 +315,10 @@ def make_llm(
     same seam the TUI's picker writes to. Raises with the name of the missing
     environment variable, because that is the only thing the user can act on.
     """
-    model = model or os.environ.get("HEDGE_FUND_LLM_MODEL") or DEFAULT_MODEL
+    model = model or os.environ.get("HEDGE_FUND_LLM_MODEL") or _default_model()
     provider = provider_for(model)
+    if provider is None and model.startswith("gemini"):
+        provider = "Google"  # e.g. a Gemini id newer than the registry
     if provider is None:
         # Unlisted ids still work: a model newer than the registry should not
         # need a code change. Anthropic is the default transport.
@@ -268,6 +351,9 @@ def make_llm(
         from langchain_google_genai import ChatGoogleGenerativeAI
         chat = ChatGoogleGenerativeAI(model=model, api_key=api_key,
                                       timeout=timeout, max_retries=1)
+        # Free-tier quotas are per minute and per day: one call at a time,
+        # exponential backoff on 429 (RateLimitPolicy).
+        return ChatLLM(model, chat, on_token, rate_limit=RateLimitPolicy.from_env())
     elif provider == "xAI":
         from langchain_xai import ChatXAI
         chat = ChatXAI(model=model, api_key=api_key, timeout=timeout,
@@ -284,6 +370,12 @@ def make_llm(
         raise ValueError(f"Unhandled provider {provider}")
 
     return ChatLLM(model, chat, on_token)
+
+
+def _default_model() -> str:
+    from hedge_fund.data.provider import is_kr_mode
+
+    return KR_DEFAULT_MODEL if is_kr_mode() else DEFAULT_MODEL
 
 
 def AnthropicLLM(model: str | None = None, **kwargs) -> LLMClient:  # noqa: N802

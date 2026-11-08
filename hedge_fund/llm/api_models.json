@@ -43,5 +43,15 @@
     "display_name": "Gemini 3.8 Flash",
     "model_name": "gemini-3.8-flash",
     "provider": "Google"
+  },
+  {
+    "display_name": "Gemini Flash (latest)",
+    "model_name": "gemini-flash-latest",
+    "provider": "Google"
+  },
+  {
+    "display_name": "Gemini Flash-Lite (latest)",
+    "model_name": "gemini-flash-lite-latest",
+    "provider": "Google"
   }
 ]

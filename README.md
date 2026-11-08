@@ -7,6 +7,8 @@ This is a proof of concept for an AI-powered hedge fund. The goal of this projec
 
 Note: the system does not actually make any trades.
 
+**한국어 / Korean stocks (KOSPI·KOSDAQ, free data):** see [README_KR.md](README_KR.md).
+
 [![Twitter Follow](https://img.shields.io/twitter/follow/virattt?style=social)](https://twitter.com/virattt)
 
 ## Disclaimer

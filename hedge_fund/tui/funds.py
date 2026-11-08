@@ -29,6 +29,7 @@ from hedge_fund.paper import (
 from hedge_fund.tui.backtest import BacktestScreen
 from hedge_fund.tui.palette import BRIGHT, CYAN, GREEN, MUTED, RED, TEXT
 from hedge_fund.tui.shared import cadence_identity, MODE_LABELS, strategy_description
+from hedge_fund.money import money
 
 
 class FundSelectScreen(Screen):
@@ -414,7 +415,7 @@ def _fund_detail(spec: FundSpec, history: list[dict]) -> Group:
     staff = ", ".join(s.title for s in spec.strategies)
     parts: list = [
         Text(spec.name, style=f"bold {BRIGHT}"),
-        Text(f"{staff}  ·  {cadence_identity(spec)}  ·  ${spec.capital:,.0f}", style=MUTED),
+        Text(f"{staff}  ·  {cadence_identity(spec)}  ·  {money(spec.capital)}", style=MUTED),
     ]
     parts.extend(Text(f"{s.title}: {strategy_description(s)}", style=MUTED) for s in spec.strategies)
 

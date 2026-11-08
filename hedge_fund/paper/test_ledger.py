@@ -72,9 +72,9 @@ def test_replay_detects_an_edited_record(tmp_path, records):
     for record in records[:3]:
         ledger.append(record)
     path = ledger.path(WEEKDAYS[1])
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     data["cash"] = 999.0
-    path.write_text(json.dumps(data))
+    path.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(LedgerError, match="altered"):
         ledger.replay(100_000)
 
@@ -156,7 +156,7 @@ def test_checkpoint_shortcuts_replay_and_is_ignored_once_the_chain_moves_under_i
     assert (tmp_path / "ledger" / "superseded" / f"2026-10-06T093000.{records[3].hash[:12]}.json").exists()
     ledger.rewind()
     assert not path.exists() and ledger.replay(100_000).last_session == MONDAY[1]
-    path.write_text(monday_close.model_dump_json())
+    path.write_text(monday_close.model_dump_json(), encoding="utf-8")
     assert ledger.replay(100_000).last_session == MONDAY[1]
 
 
@@ -164,7 +164,7 @@ def test_kill_switch_round_trips_and_logs(tmp_path):
     ledger = Ledger(tmp_path)
     ledger.init()
     assert ledger.halted() is None
-    assert json.loads(ledger.control_path.read_text()) == {"halted": False}
+    assert json.loads(ledger.control_path.read_text(encoding="utf-8")) == {"halted": False}
     ledger.halt("drawdown breach")
     assert ledger.halted() == "drawdown breach"
     assert ledger.replay(1.0).halted == "drawdown breach"

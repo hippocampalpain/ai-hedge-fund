@@ -7,6 +7,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import OptionList, Static
 
+from hedge_fund.money import money
 from hedge_fund.tui.palette import BRIGHT, GREEN, MUTED, RED
 
 
@@ -24,7 +25,7 @@ class StatTiles(Horizontal):
         def tile(label: str, value: str, style: str) -> Text:
             return Text.assemble((f"{label}\n", MUTED), (value, f"bold {style}"), justify="center")
 
-        self.query_one("#stat-nav", Static).update(tile("PORTFOLIO", f"${nav:,.0f}", BRIGHT))
+        self.query_one("#stat-nav", Static).update(tile("PORTFOLIO", f"{money(nav)}", BRIGHT))
         self.query_one("#stat-return", Static).update(
             tile("RETURN", f"{fund_return:+.2%}", GREEN if fund_return >= 0 else RED))
         self.query_one("#stat-bench", Static).update(

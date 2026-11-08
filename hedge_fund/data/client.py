@@ -46,7 +46,14 @@ def payment_error(resp: requests.Response) -> str:
 def has_data_credential() -> bool:
     """True when the environment holds something a request can be billed to:
     an API key, or a wallet to pay per call with x402. The one place that
-    decides it, so the TUI gates and the client cannot disagree."""
+    decides it, so the TUI gates and the client cannot disagree.
+
+    Korean mode (DATA_PROVIDER=kr) needs only an OpenDART key; prices come
+    from free sources."""
+    from hedge_fund.data.provider import DART_KEY_ENV, is_kr_mode
+
+    if is_kr_mode():
+        return bool(os.environ.get(DART_KEY_ENV))
     return bool(os.environ.get(API_KEY_ENV) or os.environ.get(WALLET_KEY_ENV))
 
 

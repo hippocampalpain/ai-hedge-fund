@@ -32,7 +32,7 @@ MINIMAL = {
 
 def test_yaml_load_happy_path(tmp_path):
     path = tmp_path / "fund.yaml"
-    path.write_text("schema_version: 2\n" "name: yaml-fund\n" "strategies:\n" "  - name: event\n" "    weight: 2.0\n" "    blend: {mode: long_short}\n" "    models:\n" "      - name: pead\n" "        weight: 3.0\n" "risk:\n" "  max_position_pct: 0.2\n" "  max_gross_exposure: 1.5\n" "capital: 50000\n")
+    path.write_text("schema_version: 2\n" "name: yaml-fund\n" "strategies:\n" "  - name: event\n" "    weight: 2.0\n" "    blend: {mode: long_short}\n" "    models:\n" "      - name: pead\n" "        weight: 3.0\n" "risk:\n" "  max_position_pct: 0.2\n" "  max_gross_exposure: 1.5\n" "capital: 50000\n", encoding="utf-8")
     spec = load_spec(path)
     assert spec.name == "yaml-fund"
     assert spec.strategies[0].weight == 2.0
@@ -42,7 +42,7 @@ def test_yaml_load_happy_path(tmp_path):
 
 def test_load_strategy(tmp_path):
     path = tmp_path / "value.yaml"
-    path.write_text("name: value\n" "blend: {mode: long_short}\n" "models:\n" "  - name: buffett\n" "  - name: pead\n")
+    path.write_text("name: value\n" "blend: {mode: long_short}\n" "models:\n" "  - name: buffett\n" "  - name: pead\n", encoding="utf-8")
     strategy = load_strategy(path)
     assert strategy.name == "value"
     assert strategy.weight == 1.0  # slices are a fund-assembly concern
@@ -160,7 +160,7 @@ def test_mandate_carries_no_tickers():
 
 def test_unversioned_files_are_rejected_without_changes(tmp_path):
     path = tmp_path / "old.yaml"
-    path.write_text("name: old-fund\n" "universe: [AAPL, MSFT]\n" "strategies:\n" "  - name: event\n" "    models:\n" "      - name: pead\n" "risk:\n" "  max_position_pct: 0.25\n" "  max_gross_exposure: 1.0\n")
+    path.write_text("name: old-fund\n" "universe: [AAPL, MSFT]\n" "strategies:\n" "  - name: event\n" "    models:\n" "      - name: pead\n" "risk:\n" "  max_position_pct: 0.25\n" "  max_gross_exposure: 1.0\n", encoding="utf-8")
     original = path.read_bytes()
     with pytest.raises(ValueError, match="older format") as exc:
         load_spec(path)
@@ -221,7 +221,7 @@ def test_custom_rules_derive_without_constructing_analysts(names, mode, monkeypa
     assert strategy.blend.mode == mode
     spec = FundSpec(**{**MINIMAL, "strategies": [strategy]})
     path = tmp_path / "new.yaml"
-    path.write_text(yaml.safe_dump(spec.model_dump()))
+    path.write_text(yaml.safe_dump(spec.model_dump()), encoding="utf-8")
     assert load_spec(path) == spec
     assert FundSpec.model_validate_json(spec.model_dump_json()) == spec
 
@@ -302,7 +302,7 @@ def test_bad_configuration_names_file_and_field(tmp_path, mutation, field):
     data = deepcopy(MINIMAL)
     mutation(data)
     path = tmp_path / "bad.yaml"
-    path.write_text(yaml.safe_dump(data))
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
     with pytest.raises(ValueError) as exc:
         load_spec(path)
     assert str(path) in str(exc.value)
@@ -317,11 +317,11 @@ def test_discovery_is_read_only_and_isolates_invalid_files(tmp_path):
         "empty.yaml": "",
     }
     for name, content in contents.items():
-        (tmp_path / name).write_text(content)
+        (tmp_path / name).write_text(content, encoding="utf-8")
     entries = {e.path.name: e for e in discover_funds(tmp_path)}
     assert entries["valid.yaml"].spec.name == "test-fund"
     assert all(entries[name].error for name in contents if name != "valid.yaml")
-    assert {p.name: p.read_text() for p in tmp_path.iterdir()} == contents
+    assert {p.name: p.read_text(encoding="utf-8") for p in tmp_path.iterdir()} == contents
 
 
 @pytest.mark.parametrize(

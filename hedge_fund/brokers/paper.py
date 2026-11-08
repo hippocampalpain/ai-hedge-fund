@@ -30,7 +30,7 @@ class PaperBroker(SimBroker):
     def __init__(self, path: str | Path, costs: TradingCosts | None = None) -> None:
         self._path = Path(path)
         try:
-            data = json.loads(self._path.read_text())
+            data = json.loads(self._path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise ValueError(f"{self._path}: cannot read the paper broker's book: {exc}") from exc
         super().__init__(cash=float(data["cash"]), costs=costs)

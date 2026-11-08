@@ -11,6 +11,7 @@ from rich import box
 from rich.table import Table
 from rich.text import Text
 
+from hedge_fund.money import money, pnl
 from hedge_fund.scorecard import Scorecard
 from hedge_fund.tui.palette import BRIGHT, GREEN, MUTED, RED, TEXT
 from hedge_fund.tui.shared import horizon_label, SHORT_NAMES
@@ -73,15 +74,14 @@ def strategy_table(card: Scorecard) -> Table:
         table.add_row(
             s.name,
             str(s.n_periods),
-            Text(f"{s.pnl:+,.0f}", style=_signed(s.pnl)),
+            Text(pnl(s.pnl), style=_signed(s.pnl)),
             Text(f"{s.return_pct:+.2%}", style=_signed(s.return_pct)),
             _rate(s.win_rate, s.n_periods),
             _NONE if s.t_stat is None else Text(f"{s.t_stat:+.1f}", style=_signed(s.t_stat)),
             Text(f"{s.max_drawdown_pct:.1%}", style=RED if s.max_drawdown_pct > 0 else MUTED),
             _NONE if s.share_of_pnl is None else Text(f"{s.share_of_pnl:+.0%}", style=TEXT),
         )
-    table.caption = (f"fund P&L {card.fund_pnl:+,.0f}  ·  unattributed {card.unattributed:+,.0f}  ·  "
-                     f"of which trading costs {-card.trading_cost:+,.0f}")
+    table.caption = pnl_caption(card)
     table.caption_style = MUTED
     table.caption_justify = "left"
     return table
@@ -117,3 +117,30 @@ def _significance(t_stat: float) -> str:
     if t_stat <= -2:
         return RED
     return MUTED
+
+
+def pnl_caption(card: Scorecard) -> str:
+    """How the sleeves' window adds up to the run's whole P&L (= its return).
+
+    The table scores sleeves only between executions, so a run whose last
+    execution is before its last session has P&L the table cannot show — a
+    fall after the last rebalance makes the table positive and the return
+    negative. Both lines together always equal end NAV minus start NAV."""
+    if card.window_start is not None and card.window_start != card.window_end:
+        span = f" ({card.window_start} → {card.window_end}, first to last execution, pre-fill)"
+    else:
+        span = ""
+    lines = [(f"fund P&L {pnl(card.fund_pnl)}{span}  ·  "
+              f"unattributed {pnl(card.unattributed)}  ·  "
+              f"of which trading costs {pnl(-card.trading_cost)}")]
+    if card.start_nav is None or card.end_nav is None:
+        return lines[0]
+    parts = [f"fund P&L {pnl(card.fund_pnl)}"]
+    if abs(card.pnl_before_window) >= 0.5:
+        parts.append(f"before the first execution {pnl(card.pnl_before_window)}")
+    tail_from = card.window_end or card.first_session
+    parts.append(f"after the last execution {pnl(card.pnl_after_window)} "
+                 f"({tail_from} → {card.last_session}: its fills, then marked to the last close)")
+    lines.append(f"total P&L {pnl(card.total_pnl)} = " + " + ".join(parts) +
+                 f"  ·  NAV {money(card.start_nav)} → {money(card.end_nav)}")
+    return "\n".join(lines)

@@ -3,6 +3,7 @@ canned prints; and tick on a bar, the same session by hand."""
 
 import os
 import signal
+import sys
 import threading
 from datetime import datetime, timedelta
 
@@ -238,17 +239,18 @@ def test_a_daily_fund_is_run_unattended_too_catching_up_after_each_midnight(tmp_
     assert loop.events == [] and Ledger(directory).sessions() == ["2024-06-03", "2024-06-04", "2024-06-05", "2024-06-06"]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="os.kill(own pid, SIGTERM) is TerminateProcess on Windows")
 def test_serve_holds_a_pid_file_and_stops_on_sigterm(tmp_path, monkeypatch):
     directory = deploy("bars", _spec(), ["AAPL"], root=tmp_path)
     assert not is_running(directory) and not stop_runner(directory)
-    (directory / PID_FILE).write_text("999999999")
+    (directory / PID_FILE).write_text("999999999", encoding="utf-8")
     assert not is_running(directory)  # a stale pid is not a runner
 
     import hedge_fund.paper.runner as runner
     seen = {}
 
     def quick(directory, data, *, stop, **kwargs):
-        seen["pid"] = int((directory / PID_FILE).read_text())
+        seen["pid"] = int((directory / PID_FILE).read_text(encoding="utf-8"))
         seen["running"] = is_running(directory)
         threading.Timer(0.05, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
         seen["stopped"] = stop.wait(5)
@@ -258,6 +260,114 @@ def test_serve_holds_a_pid_file_and_stops_on_sigterm(tmp_path, monkeypatch):
     assert seen == {"pid": os.getpid(), "running": True, "stopped": True}
     assert not (directory / PID_FILE).exists() and not is_running(directory)
     # Two runners on one fund is a race on the ledger: the second refuses.
-    (directory / PID_FILE).write_text(str(os.getpid()))
+    (directory / PID_FILE).write_text(str(os.getpid()), encoding="utf-8")
     with pytest.raises(RuntimeError, match="already running"):
         serve(directory, _tape(_at(DAY, "12:59:00")))
+
+
+
+# ---- Windows: probe and stop without signals --------------------------------
+
+@pytest.fixture
+def windows(monkeypatch):
+    """The runner as it behaves on Windows, on any OS: liveness by a process
+    query, never os.kill — which there would send Ctrl-C (sig 0 is
+    CTRL_C_EVENT) or TerminateProcess (SIGTERM)."""
+    from hedge_fund.paper import runner
+
+    alive = {os.getpid()}
+    monkeypatch.setattr(runner, "_WINDOWS", True)
+    monkeypatch.setattr(runner, "_windows_pid_alive", lambda pid: pid in alive)
+    monkeypatch.setattr(runner, "_STOP_POLL", 0.02)
+
+    def no_signals(pid, sig):
+        raise AssertionError(f"os.kill({pid}, {sig}) on Windows")
+    monkeypatch.setattr(os, "kill", no_signals)
+    return runner
+
+
+def test_windows_liveness_and_stop_never_send_a_signal(tmp_path, windows):
+    from hedge_fund.paper import STOP_FILE
+    directory = deploy("bars", _spec(), ["AAPL"], root=tmp_path)
+    (directory / PID_FILE).write_text(str(os.getpid()), encoding="utf-8")   # what test_run's minute-fund test does
+    assert is_running(directory)
+    assert stop_runner(directory) and (directory / STOP_FILE).exists()
+    (directory / PID_FILE).write_text("999999999", encoding="utf-8")
+    assert not is_running(directory) and not stop_runner(directory)
+
+
+def test_windows_stop_file_ends_serve_and_everything_is_put_back(tmp_path, windows, monkeypatch):
+    from hedge_fund.paper import STOP_FILE
+    directory = deploy("bars", _spec(), ["AAPL"], root=tmp_path)
+    handlers = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+    seen = {}
+
+    def quick(directory, data, *, stop, **kwargs):
+        threading.Timer(0.05, lambda: stop_runner(directory)).start()   # `aihf paper stop` from elsewhere
+        seen["stopped"] = stop.wait(5)
+    monkeypatch.setattr(windows, "run", quick)
+
+    serve(directory, _tape(_at(DAY, "12:59:00")))
+    assert seen == {"stopped": True}
+    assert not (directory / PID_FILE).exists() and not (directory / STOP_FILE).exists()
+    assert {s: signal.getsignal(s) for s in handlers} == handlers
+    assert not [t for t in threading.enumerate() if t.name.startswith("aihf-stop-watch")]
+
+
+def test_serve_cleans_up_when_the_loop_raises(tmp_path, monkeypatch):
+    from hedge_fund.paper import runner
+    directory = deploy("bars", _spec(), ["AAPL"], root=tmp_path)
+    handlers = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+
+    def boom(directory, data, **kwargs):
+        raise KeyboardInterrupt  # e.g. a real Ctrl-C in the runner's own console
+    monkeypatch.setattr(runner, "run", boom)
+    with pytest.raises(KeyboardInterrupt):
+        serve(directory, _tape(_at(DAY, "12:59:00")))
+    assert not (directory / PID_FILE).exists()
+    assert {s: signal.getsignal(s) for s in handlers} == handlers
+    assert not [t for t in threading.enumerate() if t.name.startswith("aihf-stop-watch")]
+
+
+def test_a_stale_stop_file_does_not_stop_the_next_runner(tmp_path, monkeypatch):
+    from hedge_fund.paper import STOP_FILE, runner
+    directory = deploy("bars", _spec(), ["AAPL"], root=tmp_path)
+    (directory / STOP_FILE).write_text("123", encoding="utf-8")
+    monkeypatch.setattr(runner, "_STOP_POLL", 0.02)
+    seen = {}
+
+    def quick(directory, data, *, stop, **kwargs):
+        seen["stopped_early"] = stop.wait(0.1)
+    monkeypatch.setattr(runner, "run", quick)
+    serve(directory, _tape(_at(DAY, "12:59:00")))
+    assert seen == {"stopped_early": False}
+
+
+@pytest.mark.parametrize("is_windows", [True, False])
+def test_spawned_runner_is_detached_from_the_apps_console(tmp_path, monkeypatch, is_windows):
+    import subprocess
+
+    from hedge_fund.paper import runner
+    captured = {}
+
+    class FakePopen:
+        pid = 4321
+
+        def __init__(self, args, **kwargs):
+            captured.update(kwargs)
+    monkeypatch.setattr(runner, "_WINDOWS", is_windows)
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+    directory = deploy("bars", _spec(), ["AAPL"], root=tmp_path)
+    assert runner.spawn_runner(directory) == 4321
+    if is_windows:
+        assert captured["creationflags"] == 0x00000200 | 0x00000008   # new process group, no console
+        assert "start_new_session" not in captured
+    else:
+        assert captured["start_new_session"] is True and "creationflags" not in captured
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the real Windows process query")
+def test_windows_process_query_on_a_real_windows_machine():
+    from hedge_fund.paper import runner
+    assert runner._windows_pid_alive(os.getpid())
+    assert not runner._windows_pid_alive(999999999)

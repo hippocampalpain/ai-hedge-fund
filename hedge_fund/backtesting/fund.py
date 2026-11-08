@@ -24,9 +24,9 @@ from pydantic import BaseModel
 
 from hedge_fund.brokers.sim import SimBroker
 from hedge_fund.data.protocol import DataClient
-from hedge_fund.data.sessions import previous_day, session_closes
+from hedge_fund.data.sessions import session_closes
 from hedge_fund.fund import Fund, FundSpec, normalize_universe
-from hedge_fund.pipeline.clock import Clock, DailyClock
+from hedge_fund.pipeline.clock import Clock, DailyClock, previous_session_on_grid
 from hedge_fund.pipeline.models import CycleRecord
 from hedge_fund.pipeline.session import (
     advance,
@@ -46,8 +46,13 @@ class ReplaySchedule(BaseModel):
 
     @property
     def assessment_dates(self) -> list[str]:
+        """Every date an analyst is asked about: each rebalance decision and
+        each execution's refresh cutoff — the previous *trading* session
+        (`DailyClock` on the grid), which on a daily grid is the decision day
+        itself. Weekends and holidays are never assessment dates."""
+        days = sorted(self.closes)
         return sorted(set(self.execution_dates) | {
-            previous_day(session) for session in self.execution_dates.values()
+            previous_session_on_grid(days, session) for session in self.execution_dates.values()
             if session is not None
         })
 
@@ -187,8 +192,8 @@ def replay_grid(spec: FundSpec, days: list[str], data: DataClient) -> tuple[list
     mandate decides every session, so on a daily grid it is a daily fund,
     and the result's cadence says that is how it was replayed."""
     if not spec.is_intraday:
-        return days, DailyClock(data), spec.rebalance, 252
-    return days, DailyClock(data), f"daily (mandate: {spec.cadence_label} · {spec.window.label})", 252
+        return days, DailyClock(data, days), spec.rebalance, 252
+    return days, DailyClock(data, days), f"daily (mandate: {spec.cadence_label} · {spec.window.label})", 252
 
 
 def rebalance_grid(days: list[str], cadence: str) -> list[str]:

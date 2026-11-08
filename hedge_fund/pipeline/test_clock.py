@@ -72,7 +72,7 @@ def test_minute_is_a_rebalance_every_bar_and_periods_read_the_date_of_a_bar():
 
 
 def test_records_written_before_print_times_existed_still_verify():
-    record = SessionRecord.model_validate_json(FIXTURE.read_text())
+    record = SessionRecord.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
     assert record.snapshot_times is None and record.decision is not None
     assert record.hash == record.compute_hash()
     # The field counts the moment it is set; a bar's record is not a day's.
@@ -207,3 +207,21 @@ def test_a_stale_pending_is_refreshed_at_the_bar_before_execution():
     assert record.executed.original_assessment.as_of == f"{yesterday}T16:00:00"
     assert len(analyst.predict_calls) > asked_before  # refreshed, then decided again at 10:05
     assert record.executed.fills[0].price == 91.0
+
+
+def test_daily_clock_on_a_trading_grid_steps_back_to_the_previous_session():
+    from hedge_fund.pipeline.clock import previous_session_on_grid
+    grid = ["2024-06-06", "2024-06-07", "2024-06-10"]           # Thu, Fri, Mon
+    assert DailyClock(None, grid).previous("2024-06-10") == "2024-06-07"   # not Sunday 06-09
+    assert DailyClock(None).previous("2024-06-10") == "2024-06-09"         # no grid: calendar day
+    assert previous_session_on_grid(grid, "2024-06-06") == "2024-06-05"    # nothing earlier on the grid
+
+
+def test_korean_mode_daily_clock_skips_weekends_and_holidays(monkeypatch):
+    from hedge_fund.backtesting.test_fund import FakeDataClient
+    spec = _spec(rebalance="weekly", benchmark="KOSPI")
+    data = FakeDataClient({"KOSPI": {"2025-10-01": 1.0, "2025-10-02": 1.0, "2025-10-10": 1.0}})
+    assert clock_for(spec, data).previous("2025-10-10") == "2025-10-09"     # US: calendar day before
+    monkeypatch.setenv("DATA_PROVIDER", "kr")
+    assert clock_for(spec, data).previous("2025-10-10") == "2025-10-02"     # KRX: holidays skipped
+    assert clock_for(spec, data).previous("2025-10-02") == "2025-10-01"

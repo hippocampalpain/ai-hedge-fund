@@ -73,7 +73,7 @@ def test_builder_derives_rules_and_back_navigation_does_not_duplicate(names, mod
 def test_builder_existing_name_and_save_race_never_overwrite():
     original = "name: old-user-fund\n"
     path = paths.MANDATES_DIR / "existing.yaml"
-    path.write_text(original)
+    path.write_text(original, encoding="utf-8")
 
     async def scenario():
         app = HedgeFundApp()
@@ -86,7 +86,7 @@ def test_builder_existing_name_and_save_race_never_overwrite():
             await pilot.press("escape")  # declined
             assert app.screen is screen
             assert screen.query_one("#panes", ContentSwitcher).current == "step-name"
-            assert path.read_text() == original
+            assert path.read_text(encoding="utf-8") == original
             screen.query_one("#name-input", Input).value = "save-race"
             await pilot.press("enter")
             screen.query_one("#strategy-list", SelectionList).select(builder.CUSTOM)
@@ -96,16 +96,16 @@ def test_builder_existing_name_and_save_race_never_overwrite():
             assert screen.query_one("#panes", ContentSwitcher).current == "step-cadence"
             # Simulate another process saving the chosen name after validation.
             competing_path = paths.MANDATES_DIR / "save-race.yaml"
-            competing_path.write_text(original)
+            competing_path.write_text(original, encoding="utf-8")
             await pilot.press("enter")
             assert screen.query_one("#panes", ContentSwitcher).current == "step-name"
-            assert competing_path.read_text() == original
+            assert competing_path.read_text(encoding="utf-8") == original
     asyncio.run(scenario())
 
 
 def test_builder_paper_mode_builds_a_live_fund_and_refuses_taken_names():
     deploy("taken", make_spec(["pead"], "taken"), ["NVDA", "AMD"], root=paths.PAPER_DIR)
-    (paths.MANDATES_DIR / "saved.yaml").write_text(yaml.safe_dump(make_spec(["pead"], "saved").model_dump()))
+    (paths.MANDATES_DIR / "saved.yaml").write_text(yaml.safe_dump(make_spec(["pead"], "saved").model_dump()), encoding="utf-8")
 
     async def scenario():
         app = HedgeFundApp()
@@ -261,11 +261,11 @@ def test_builder_minute_helpers_are_pure():
 def test_builder_replaces_a_taken_name_only_after_yes_and_only_at_the_end():
     old = make_spec(["buffett"], "alpha")
     old.rebalance = "monthly"
-    (paths.MANDATES_DIR / "alpha.yaml").write_text(yaml.safe_dump(old.model_dump()))
+    (paths.MANDATES_DIR / "alpha.yaml").write_text(yaml.safe_dump(old.model_dump()), encoding="utf-8")
     receipt = paths.RESEARCH_DIR / "alpha-backtest-2025-01-01.json"
     receipt.write_text(json.dumps({"fund": "alpha", "universe": ["NVDA"], "metrics": {
         "total_return_pct": .1, "annualized_return_pct": .1, "sharpe_ratio": 1, "max_drawdown_pct": -.1,
-        "benchmark_return_pct": 0, "excess_return_pct": .1, "n_cycles": 1}}))
+        "benchmark_return_pct": 0, "excess_return_pct": .1, "n_cycles": 1}}), encoding="utf-8")
     directory = deploy("alpha", old, ["NVDA"], root=paths.PAPER_DIR)
     ledger = Ledger(directory)
     ledger.append(make_session("2025-01-17", nav=100000))

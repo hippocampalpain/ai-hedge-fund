@@ -1,0 +1,36 @@
+# 한국 모드 예시 mandate (DATA_PROVIDER=kr 에서 사용).
+#
+# 미국 예시(example.yaml)와 다른 점:
+#   - 벤치마크: KOSPI 지수 (KOSDAQ, KOSPI200도 가능). 백테스트 거래일도 이 지수의 실제 거래일로 정해진다.
+#   - 자본금: 1억원. 원화 기준이라 10만(=10만원)이면 삼성전자 1주도 못 산다.
+#   - 비용: 한국식 수수료율(거래대금 대비)과 매도 거래세를 설정값으로 둔다. 기본값 0.
+#   - PEAD(실적 서프라이즈) 모델은 뺐다: 무료 한국 데이터에는 컨센서스가 없어 항상 중립이다.
+#     현재 저장소의 규칙 기반 모델은 PEAD뿐이라, 한국 모드는 LLM 에이전트만 쓴다.
+#
+#   aihf backtest ~/.hedge-fund/mandates/example_kr.yaml --universe 005930,000660
+#
+schema_version: 2
+name: korea-value
+strategies:
+  - name: deep-value          # Graham 중심, 매수 전용
+    blend: {mode: long_only}
+    models:
+      - name: graham
+        weight: 2.0
+      - name: buffett
+      - name: munger
+risk:
+  max_position_pct: 0.25      # 한 종목 최대 자산의 25%
+  max_gross_exposure: 1.0
+  halve_drawdown_pct: 0.10
+  max_drawdown_pct: 0.20
+costs:
+  commission_rate: 0.0        # 증권사 수수료율 (거래대금 대비, 매수·매도 모두). 예: 0.00015 = 0.015%
+  sell_tax_rate: 0.0          # 증권거래세 (매도할 때만, 거래대금 대비). 현재 세율을 확인해서 입력하세요.
+  commission_per_share: 0.0   # 미국식 주당 수수료(달러) — 한국 모드에서는 0
+  spread_bps: 5               # 슬리피지 모델(수수료 아님): 호가 스프레드 절반, bp
+  impact_coefficient: 1.0     # 슬리피지 모델: 시장충격 계수
+  min_trade_pct: 0.005
+capital: 100000000            # 1억원
+rebalance: weekly             # daily | weekly | monthly
+benchmark: KOSPI

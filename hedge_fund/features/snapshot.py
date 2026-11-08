@@ -38,6 +38,10 @@ class PeriodFundamentals(BaseModel):
     filing_date: str | None = None
     market_cap: float | None = None
     price_to_earnings_ratio: float | None = None
+    # Given outright so an analyst never has to back P/B out of P/E × ROE —
+    # that identity holds only with period-end equity, and ROE here is on
+    # average equity, so the inferred figure runs high.
+    price_to_book_ratio: float | None = None
     return_on_equity: float | None = None
     gross_margin: float | None = None
     operating_margin: float | None = None
@@ -73,6 +77,10 @@ class FundamentalsSnapshot(BaseModel):
     # filing. Set only when build_snapshot is given a breakpoints table; None
     # means the blind prompt shows no size at all.
     size_percentile: int | None = None
+    # Korean mode only: shown beside debt/equity for 금융업 (DART 업종코드
+    # 64·65·66). None everywhere else — and then left out of the hash, so
+    # US snapshots hash exactly as before.
+    leverage_note: str | None = None
 
     @property
     def content_hash(self) -> str:
@@ -81,7 +89,8 @@ class FundamentalsSnapshot(BaseModel):
         Excludes `as_of` so two dates between filings share one hash: an
         unchanged snapshot must be free, not a fresh LLM call per date.
         """
-        canonical = self.model_dump_json(exclude={"as_of"})
+        exclude = {"as_of"} if self.leverage_note is not None else {"as_of", "leverage_note"}
+        canonical = self.model_dump_json(exclude=exclude)
         return hashlib.sha256(canonical.encode()).hexdigest()[:24]
 
     def render(self, blind: bool = False) -> str:
@@ -118,16 +127,17 @@ class FundamentalsSnapshot(BaseModel):
             f"  ROE avg: {_fmt(self.roe_avg)}  |  Net margin avg: {_fmt(self.net_margin_avg)}",
             f"  Gross margin trend (latest-oldest): {_fmt(self.gross_margin_trend)}",
             f"  Book value/share CAGR: {_fmt(self.bvps_cagr)}",
-            f"  Debt/equity (latest): {_fmt(self.debt_to_equity_latest)}",
+            f"  Debt/equity (latest): {_fmt(self.debt_to_equity_latest)}{self._leverage_suffix()}",
             "",
             "History (trailing-twelve-month periods, newest first):",
-            "period | filed | mktcap | P/E | ROE | gross_m | op_m | net_m | D/E "
+            "period | filed | mktcap | P/E | P/B | ROE | gross_m | op_m | net_m | D/E "
             "| curr | rev_gr | EPS | BVPS | FCF/sh",
         ]
         for p in self.periods:
             lines.append(
                 f"{p.report_period} | {p.filing_date or '?'} | {_fmt(p.market_cap)} "
-                f"| {_fmt(p.price_to_earnings_ratio)} | {_fmt(p.return_on_equity)} "
+                f"| {_fmt(p.price_to_earnings_ratio)} | {_fmt(p.price_to_book_ratio)} "
+                f"| {_fmt(p.return_on_equity)} "
                 f"| {_fmt(p.gross_margin)} | {_fmt(p.operating_margin)} "
                 f"| {_fmt(p.net_margin)} | {_fmt(p.debt_to_equity)} "
                 f"| {_fmt(p.current_ratio)} | {_fmt(p.revenue_growth)} "
@@ -135,6 +145,9 @@ class FundamentalsSnapshot(BaseModel):
                 f"| {_fmt(p.free_cash_flow_per_share)}"
             )
         return "\n".join(lines)
+
+    def _leverage_suffix(self) -> str:
+        return f"  ← {self.leverage_note}" if self.leverage_note else ""
 
     def _render_blind(self) -> str:
         """Backtest prompt: ratios and indexed trends, no identifying dollars."""
@@ -155,15 +168,16 @@ class FundamentalsSnapshot(BaseModel):
             f"  ROE avg: {_fmt(self.roe_avg)}  |  Net margin avg: {_fmt(self.net_margin_avg)}",
             f"  Gross margin trend (latest-oldest): {_fmt(self.gross_margin_trend)}",
             f"  Book value/share CAGR: {_fmt(self.bvps_cagr)}",
-            f"  Debt/equity (latest): {_fmt(self.debt_to_equity_latest)}",
+            f"  Debt/equity (latest): {_fmt(self.debt_to_equity_latest)}{self._leverage_suffix()}",
             "",
             "History (trailing-twelve-month periods, newest first):",
-            "period | P/E | ROE | gross_m | op_m | net_m | D/E "
+            "period | P/E | P/B | ROE | gross_m | op_m | net_m | D/E "
             "| curr | rev_gr | eps_idx | bvps_idx | fcf_idx | eps_yoy",
         ]
         for i, p in enumerate(self.periods):
             lines.append(
-                f"t-{i} | {_fmt(p.price_to_earnings_ratio)} | {_fmt(p.return_on_equity)} "
+                f"t-{i} | {_fmt(p.price_to_earnings_ratio)} | {_fmt(p.price_to_book_ratio)} "
+                f"| {_fmt(p.return_on_equity)} "
                 f"| {_fmt(p.gross_margin)} | {_fmt(p.operating_margin)} "
                 f"| {_fmt(p.net_margin)} | {_fmt(p.debt_to_equity)} "
                 f"| {_fmt(p.current_ratio)} | {_fmt(p.revenue_growth)} "
@@ -235,12 +249,25 @@ def build_snapshot(
         market_cap_latest=metrics[0].market_cap,
         eps_growth_yoy=_eps_growth_yoy(rows),
         size_percentile=size_percentile,
+        leverage_note=_leverage_note(facts),
     )
 
 
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+def _leverage_note(facts) -> str | None:
+    """Korean 금융업 (by DART 업종코드) gets a note beside debt/equity; any
+    other company — and every US company — gets None."""
+    if facts is None or facts.location != "KR" or not facts.industry_code:
+        return None
+    from hedge_fund.data.kr.symbols import (
+        FINANCIAL_LEVERAGE_NOTE,
+        is_financial_industry,
+    )
+    return FINANCIAL_LEVERAGE_NOTE if is_financial_industry(facts.industry_code) else None
+
 
 def _size_label(percentile: int) -> str:
     if percentile <= 0:

@@ -18,6 +18,7 @@ from textual.widgets.option_list import Option
 
 from hedge_fund import paths
 from hedge_fund.data import CachedDataClient, FDClient, PriceSnapshot
+from hedge_fund.data.provider import is_kr_mode, make_data_client
 from hedge_fund.data.bars import is_intraday
 from hedge_fund.fund import FundSpec
 from hedge_fund.llm import make_llm
@@ -76,6 +77,15 @@ from hedge_fund.tui.shared import (
     session_label,
 )
 from hedge_fund.tui.widgets import first_selectable, StatTiles
+from hedge_fund.money import money
+
+
+def _data_client():
+    """FDClient, or the Korean provider when DATA_PROVIDER=kr. FDClient is
+    looked up at call time so tests that patch this module's FDClient work."""
+    if is_kr_mode():
+        return make_data_client()
+    return FDClient()
 
 
 class PaperScreen(Screen):
@@ -494,7 +504,7 @@ class RunSessionScreen(Screen):
             spec = deployed.spec
             ledger = Ledger(directory)
             state = ledger.replay(spec.capital)
-            with FDClient() as raw:
+            with _data_client() as raw:
                 data = CachedDataClient(raw, live=spec.is_intraday)
                 if self._redo:
                     if state.last_session is None:
@@ -507,7 +517,7 @@ class RunSessionScreen(Screen):
                     due = next_session(data, spec, state.last_session)
                     if due is None:  # the session slipped out from under the approval step
                         raise NothingDue(f"nothing due after {state.last_session}")
-                dates = assessment_dates(state, due, spec)
+                dates = assessment_dates(state, due, spec, data)
                 app.call_from_thread(self._begin_board, deployed, due, dates, state.pending)
                 if dates:
                     self._warm(spec, deployed.universe, dates)
@@ -526,7 +536,7 @@ class RunSessionScreen(Screen):
             # no client and simply runs.
             model = (cls(llm=make_llm(on_token=desk.feed))
                      if issubclass(cls, LLMAgent) else cls())
-            with FDClient() as raw:
+            with _data_client() as raw:
                 fd = CachedDataClient(raw)
                 for as_of in dates:
                     for ticker in universe:
@@ -662,7 +672,7 @@ class SessionsScreen(Screen):
         staff = ", ".join(s.title for s in spec.strategies)
         self.query_one("#pf-head", Static).update(Group(
             Text.assemble((snap.deployed.name, f"bold {BRIGHT}"), ("  ·  paper", MUTED)),
-            Text(f"{staff}  ·  {cadence_identity(spec)}  ·  ${spec.capital:,.0f}"
+            Text(f"{staff}  ·  {cadence_identity(spec)}  ·  {money(spec.capital)}"
                  f"  ·  {' '.join(snap.deployed.universe)}", style=MUTED),
         ))
         self.query_one("#pf-status", Static).update(snap.status())
@@ -779,6 +789,6 @@ def _resolve_next_session(directory: Path) -> tuple[DeployedFund, FundState, str
     market for its closes; a minute fund's bar is read off the clock)."""
     deployed = load_deployed(directory)
     state = Ledger(directory).replay(deployed.spec.capital)
-    with FDClient() as raw:
+    with _data_client() as raw:
         due = next_session(CachedDataClient(raw), deployed.spec, state.last_session)
     return deployed, state, due

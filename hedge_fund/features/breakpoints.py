@@ -127,8 +127,28 @@ def load_breakpoints(
                 raise
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text)
-    return MEBreakpoints.parse(path.read_text())
+            path.write_text(text, encoding="utf-8")
+    return MEBreakpoints.parse(path.read_text(encoding="utf-8"))
+
+
+class NoBreakpoints(MEBreakpoints):
+    """Korean mode: the published table ranks US stocks in dollars, so a
+    KRW market cap has no place on it. Every lookup answers None, and the
+    blind prompt shows no size line (the same as having no table)."""
+
+    def __init__(self) -> None:
+        self._rows = {}
+        self._months = []
+
+    @property
+    def latest_month(self) -> str:
+        return ""
+
+    def row_for(self, filing_date: str):
+        return None
+
+    def size_percentile(self, market_cap: float | None, filing_date: str) -> int | None:
+        return None
 
 
 _shared: MEBreakpoints | None = None
@@ -137,7 +157,12 @@ _shared_lock = threading.Lock()
 
 def shared_breakpoints() -> MEBreakpoints:
     """Process-wide table, loaded once. Blind agents on many threads
-    (the TUI warms them in parallel) share it."""
+    (the TUI warms them in parallel) share it. In Korean mode there is
+    no KRW table, so size is withheld (NoBreakpoints)."""
+    from hedge_fund.data.provider import is_kr_mode
+
+    if is_kr_mode():
+        return NoBreakpoints()
     global _shared
     with _shared_lock:
         if _shared is None:

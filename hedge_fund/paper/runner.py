@@ -59,6 +59,9 @@ from hedge_fund.pipeline.clock import LiveClock
 from hedge_fund.pipeline.session import FundHalted, SessionRecord
 
 PID_FILE = "runner.pid"
+STOP_FILE = "runner.stop"  # `aihf paper stop` drops it; the runner sees it within _STOP_POLL seconds
+_STOP_POLL = 1.0
+_WINDOWS = sys.platform == "win32"
 _LATE_SECONDS = 60      # how long after a boundary its prints still count as that bar's
 _DAY_TURNS = time(0, 5)  # when a daily fund's loop first looks for yesterday's close
 _DAY_POLL = 3600         # ...and how often it looks again until the close has landed
@@ -197,43 +200,112 @@ def serve(
     on_record: Callable[[SessionRecord], None] | None = None,
     on_event: Callable[[str, dict], None] | None = None,
 ) -> None:
-    """`run` as a process: one per fund, found by its pid file, stopped by
-    SIGTERM or SIGINT after the bar in flight. Refuses to start twice."""
+    """`run` as a process: one per fund, found by its pid file, stopped
+    after the bar in flight by `stop_runner` (a stop file, on every
+    platform), SIGTERM (POSIX) or Ctrl-C. Refuses to start twice.
+
+    Everything it sets up is put back when it returns, however it returns:
+    the signal handlers it replaced, the stop-file watcher thread (joined),
+    the pid file and any stop file."""
     directory = Path(directory)
     if is_running(directory):
         raise RuntimeError(f"{directory.name} is already running (pid {_read_pid(directory)})")
+    (directory / STOP_FILE).unlink(missing_ok=True)  # a stop meant for an earlier runner
     stop = threading.Event()
     previous = {s: signal.signal(s, lambda *_: stop.set()) for s in (signal.SIGTERM, signal.SIGINT)}
-    (directory / PID_FILE).write_text(str(os.getpid()))
+    watcher = threading.Thread(target=_watch_stop_file, args=(directory, stop),
+                               name=f"aihf-stop-watch-{directory.name}", daemon=True)
+    (directory / PID_FILE).write_text(str(os.getpid()), encoding="utf-8")
+    watcher.start()
     try:
         run(directory, data_client, stop=stop, build_fund=build_fund, on_record=on_record, on_event=on_event)
     finally:
+        stop.set()  # also ends the watcher
+        watcher.join(timeout=_STOP_POLL * 5)
         for sig, handler in previous.items():
             signal.signal(sig, handler)
         if _read_pid(directory) == os.getpid():
             (directory / PID_FILE).unlink(missing_ok=True)
+        (directory / STOP_FILE).unlink(missing_ok=True)
+
+
+def _watch_stop_file(directory: Path, stop: threading.Event) -> None:
+    while not stop.wait(_STOP_POLL):
+        if (directory / STOP_FILE).exists():
+            stop.set()
 
 
 def is_running(directory: str | Path) -> bool:
-    """Whether a runner holds this fund: its pid file names a live process."""
+    """Whether a runner holds this fund: its pid file names a live process.
+
+    Only ever *looks* at the process. On Windows ``os.kill(pid, 0)`` is not
+    a probe: 0 is ``signal.CTRL_C_EVENT``, so it would send Ctrl-C to the
+    console (the runner, the app, a test run). There the process is opened
+    for a query instead."""
     pid = _read_pid(directory)
-    if pid is None:
+    return pid is not None and _pid_alive(pid)
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
         return False
+    if _WINDOWS:
+        return _windows_pid_alive(pid)
     try:
-        os.kill(pid, 0)
+        os.kill(pid, 0)  # POSIX: signal 0 checks existence, delivers nothing
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True
+        return True  # alive, owned by someone else
+    except OSError:
+        return False
     return True
 
 
+def _windows_pid_alive(pid: int) -> bool:
+    """OpenProcess + GetExitCodeProcess: STILL_ACTIVE means alive. Sends nothing."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    process_query_limited_information, still_active, error_access_denied = 0x1000, 259, 5
+    if pid > 0xFFFFFFFF:
+        return False
+    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not handle:
+        return ctypes.get_last_error() == error_access_denied  # exists, not ours to open
+    try:
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return False
+        return code.value == still_active
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def stop_runner(directory: str | Path) -> bool:
-    """Ask the fund's runner to stop after its current bar. False if none."""
+    """Ask the fund's runner to stop after its current bar. False if none.
+
+    Writes the stop file the runner watches — a graceful stop on every
+    platform. On POSIX it also sends SIGTERM so the runner wakes at once. On
+    Windows nothing is sent: ``os.kill(pid, SIGTERM)`` there is
+    TerminateProcess, which would kill the runner mid-session and leave its
+    pid file behind."""
+    directory = Path(directory)
     pid = _read_pid(directory)
     if pid is None or not is_running(directory):
         return False
-    os.kill(pid, signal.SIGTERM)
+    (directory / STOP_FILE).write_text(str(pid), encoding="utf-8")
+    if not _WINDOWS:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass  # gone between the check and the signal; the stop file is harmless
     return True
 
 
@@ -241,15 +313,23 @@ _RUNNER_LOG = "runner.log"  # where a runner started from the app writes its con
 
 
 def spawn_runner(directory: Path) -> int:
-    """Start `aihf paper run <name>` as its own session so it survives the
-    app closing; its console goes to runner.log in the fund directory. The
-    runner writes runner.pid itself once it is up. Returns the child's pid."""
-    log = (directory / _RUNNER_LOG).open("a")
+    """Start `aihf paper run <name>` detached so it survives the app closing;
+    its console goes to runner.log in the fund directory. On POSIX it gets
+    its own session; on Windows its own process group and no console, so a
+    Ctrl-C in the app's console never reaches it. The runner writes
+    runner.pid itself once it is up. Returns the child's pid."""
+    if _WINDOWS:
+        flags = (getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+                 | getattr(subprocess, "DETACHED_PROCESS", 0x00000008))
+        detach: dict = {"creationflags": flags}
+    else:
+        detach = {"start_new_session": True}
+    log = (directory / _RUNNER_LOG).open("a", encoding="utf-8")
     with log:
         child = subprocess.Popen(
             [sys.executable, "-m", "hedge_fund.run", "paper", "run", directory.name],
             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-            start_new_session=True, cwd=str(directory),
+            cwd=str(directory), **detach,
         )
     return child.pid
 
@@ -257,6 +337,6 @@ def spawn_runner(directory: Path) -> int:
 def _read_pid(directory: str | Path) -> int | None:
     path = Path(directory) / PID_FILE
     try:
-        return int(path.read_text().strip())
+        return int(path.read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
         return None

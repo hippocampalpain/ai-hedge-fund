@@ -13,13 +13,19 @@ from hedge_fund.pipeline.session import SessionRecord
 from hedge_fund.scorecard.allocation import allocate, current_allocation
 from hedge_fund.scorecard.analysts import score_analysts
 from hedge_fund.scorecard.models import AnalystScore, Scorecard, StrategyScore
-from hedge_fund.scorecard.strategies import fund_pnl, score_strategies, trading_cost
+from hedge_fund.scorecard.strategies import (
+    fund_pnl,
+    pnl_window,
+    score_strategies,
+    trading_cost,
+)
 
 
 def score(records: list[SessionRecord]) -> Scorecard:
     """Grade *records*, in session order. Raises ValueError on an empty list."""
     if not records:
         raise ValueError("nothing to score: no sessions recorded")
+    window = pnl_window(records)
     return Scorecard(
         fund=records[0].fund,
         first_session=records[0].session,
@@ -28,6 +34,7 @@ def score(records: list[SessionRecord]) -> Scorecard:
         strategies=score_strategies(records),
         fund_pnl=fund_pnl(records),
         trading_cost=trading_cost(records),
+        **window,
     )
 
 

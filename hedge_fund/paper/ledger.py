@@ -90,7 +90,7 @@ class Ledger:
 
     def read(self, session: str) -> SessionRecord:
         try:
-            return SessionRecord.model_validate_json(self.path(session).read_text())
+            return SessionRecord.model_validate_json(self.path(session).read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             raise LedgerError(f"{self.path(session)}: cannot read session record: {exc}") from exc
 
@@ -138,7 +138,9 @@ class Ledger:
         keep = self.records_dir / SUPERSEDED_SUBDIR
         keep.mkdir(exist_ok=True)
         safe = latest.session.replace(":", "")
-        self.path(latest.session).rename(keep / f"{safe}.{latest.hash[:12]}.json")
+        # replace, not rename: redoing an unchanged session supersedes a record
+        # with the same hash, and Windows refuses to rename onto an existing file.
+        self.path(latest.session).replace(keep / f"{safe}.{latest.hash[:12]}.json")
         checkpoint = self.checkpoint_path(session_date(latest.session))
         if checkpoint.exists():
             checkpoint.unlink()
@@ -202,7 +204,7 @@ class Ledger:
             if before is not None and day >= before[:10]:
                 continue
             try:
-                state = FundState.model_validate_json(self.checkpoint_path(day).read_text())
+                state = FundState.model_validate_json(self.checkpoint_path(day).read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
             if state.last_session not in recorded or (before is not None and state.last_session >= before):
@@ -222,7 +224,7 @@ class Ledger:
         if not self.control_path.exists():
             return None
         try:
-            control = json.loads(self.control_path.read_text())
+            control = json.loads(self.control_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise LedgerError(f"{self.control_path}: cannot read the kill switch: {exc}") from exc
         if not control.get("halted"):
@@ -246,13 +248,13 @@ class Ledger:
 
     def log_event(self, kind: str, **fields) -> None:
         line = json.dumps({"time": _now(), "kind": kind, **fields}, default=str)
-        with self.events_path.open("a") as handle:
+        with self.events_path.open("a", encoding="utf-8") as handle:
             handle.write(line + "\n")
 
     def events(self) -> list[dict]:
         if not self.events_path.exists():
             return []
-        return [json.loads(line) for line in self.events_path.read_text().splitlines() if line.strip()]
+        return [json.loads(line) for line in self.events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def _now() -> str:

@@ -53,3 +53,18 @@ def test_zero_on_every_field_is_a_free_fill():
 def test_negative_or_unknown_fields_are_rejected(bad):
     with pytest.raises(ValidationError):
         TradingCosts(**bad)
+
+
+def test_korean_commission_rate_and_sell_tax_are_charged_on_notional():
+    """한국 모드: 수수료율은 매수·매도 모두, 거래세는 매도에만, 거래대금 대비."""
+    costs = TradingCosts(spread_bps=0, commission_per_share=0, commission_rate=0.00015, sell_tax_rate=0.002)
+    assert costs.commission(10, notional=1_000_000, side="buy") == pytest.approx(150.0)
+    assert costs.commission(10, notional=1_000_000, side="sell") == pytest.approx(150.0 + 2_000.0)
+
+
+def test_korean_rates_default_to_zero_and_stay_out_of_the_serialized_mandate():
+    """Zero rates must not change how existing mandates serialize (ledger hashes)."""
+    assert TradingCosts().commission(100, notional=10_000, side="sell") == pytest.approx(0.5)
+    dumped = TradingCosts(spread_bps=3).model_dump()
+    assert "commission_rate" not in dumped and "sell_tax_rate" not in dumped
+    assert TradingCosts(sell_tax_rate=0.002).model_dump()["sell_tax_rate"] == 0.002

@@ -18,6 +18,7 @@ from rich.text import Text
 from hedge_fund.data.bars import is_intraday
 from hedge_fund.fund import FundSpec, PortfolioMode, StrategySpec
 from hedge_fund.signals import ALPHA_MODEL_REGISTRY, get_investment_approach, LLMAgent
+from hedge_fund.money import money_short
 
 try:
     VERSION = _version("aihf")
@@ -131,9 +132,7 @@ def strategy_kind(strategy: StrategySpec) -> str:
 
 
 def _money(value: float) -> str:
-    if abs(value) >= 10_000:
-        return f"${value / 1000:,.0f}k"
-    return f"${value:,.0f}"
+    return money_short(value)
 
 
 def _render_chart(

@@ -121,7 +121,7 @@ def test_minute_fund_rows_are_pure(monkeypatch):
                       marks={"TEST": 100}, prev_hash=first.hash)
     ledger.append(first)
     ledger.append(second)
-    (directory / PID_FILE).write_text(str(os.getpid()))
+    (directory / PID_FILE).write_text(str(os.getpid()), encoding="utf-8")
     snap = paper_view.PaperSnapshot(directory)
     assert snap.running
     rows = dict(paper_view.next_run_rows(snap, now=noon.replace(hour=13, minute=6)))

@@ -62,6 +62,7 @@ from rich.console import Console
 
 from hedge_fund.backtesting import backtest_fund, save_result
 from hedge_fund.data import CachedDataClient, FDClient
+from hedge_fund.data.provider import is_kr_mode, make_data_client
 from hedge_fund.data.bars import is_intraday
 from hedge_fund.data.sessions import completed_through
 from hedge_fund.fund import Fund, load_spec, normalize_universe
@@ -86,9 +87,32 @@ from hedge_fund.tui.keys import apply_credentials
 from hedge_fund.tui.report import cost_line
 from hedge_fund.tui.scorecard_view import analyst_table, strategy_table
 from hedge_fund.tui.shared import BACKTEST_DAYS
+from hedge_fund.money import money
+
+
+def _data_client():
+    """FDClient, or the Korean provider when DATA_PROVIDER=kr. FDClient is
+    looked up at call time so tests that patch this module's FDClient work."""
+    if is_kr_mode():
+        return make_data_client()
+    return FDClient()
+
+
+def _tolerant_console_streams() -> None:
+    """Windows: a console shows any character, but output redirected to a
+    file or pipe is encoded with the locale code page (cp949, cp1252), and
+    one character it lacks (→, ·, a box line) would crash the run with
+    UnicodeEncodeError. Replace such characters instead of failing."""
+    if os.name != "nt":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        encoding = (getattr(stream, "encoding", "") or "").lower().replace("-", "")
+        if encoding != "utf8" and hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
 
 
 def main() -> None:
+    _tolerant_console_streams()
     apply_credentials()
     ensure_mandates_dir()
     parser = _parser()
@@ -185,7 +209,8 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-_UNIVERSE_HELP = "tickers to trade, comma or space separated, e.g. AAPL,MSFT,NVDA"
+_UNIVERSE_HELP = ("tickers to trade, comma or space separated, e.g. AAPL,MSFT,NVDA "
+                  "(DATA_PROVIDER=kr: 6자리 종목코드 또는 종목명, e.g. 005930,000660)")
 
 
 def _universe(text: str, parser: argparse.ArgumentParser) -> list[str]:
@@ -223,8 +248,11 @@ def _backtest(args, parser: argparse.ArgumentParser, console: Console) -> None:
     # did over the window, and that memory would otherwise score as skill.
     fund = Fund(spec, blind=True)
 
-    with FDClient() as raw:
+    with _data_client() as raw:
         fd = CachedDataClient(raw)
+        if is_kr_mode():
+            universe = _resolve_kr_universe(raw, universe, parser)
+            _print_llm_estimate(console, spec, universe, fd, start, end)
         with console.status(
             f"[cyan]{spec.name}: backtesting {start} → {end} "
             f"({spec.rebalance} rebalance vs {spec.benchmark}) "
@@ -237,19 +265,63 @@ def _backtest(args, parser: argparse.ArgumentParser, console: Console) -> None:
     print(payload)
     saved = save_result(result)
     if args.out:
-        Path(args.out).write_text(payload)
+        Path(args.out).write_text(payload, encoding="utf-8")
     m = result.metrics
     console.print(
         f"[bold]{spec.name}[/] {result.start} → {result.end}  ·  "
         f"{len(result.dates)} sessions  ·  {m.n_cycles} rebalances  ·  {m.n_orders} orders  ·  "
         f"{cost_line(m.trading_cost, m.traded_notional)}  ·  "
-        f"return {m.total_return_pct:+.1%} vs {spec.benchmark} {m.benchmark_return_pct:+.1%}  ·  "
+        f"return {m.total_return_pct:+.1%} ({money(result.nav[-1] - result.capital, sign=True)}) "
+        f"vs {spec.benchmark} {m.benchmark_return_pct:+.1%}  ·  "
         f"sharpe {m.sharpe_ratio:.2f}  ·  max drawdown {m.max_drawdown_pct:.1%}"
     )
     card = score(result.records)
     console.print(analyst_table(card))
     console.print(strategy_table(card))
     console.print(f"[dim]saved to {saved}[/]")
+
+
+def _resolve_kr_universe(client, universe: list[str], parser: argparse.ArgumentParser) -> list[str]:
+    """Korean mode: '삼성전자' → '005930'; 6-digit codes pass through."""
+    try:
+        return normalize_universe([client.resolve(t) for t in universe])
+    except ValueError as exc:
+        parser.error(str(exc))
+
+
+def _print_llm_estimate(console: Console, spec, universe: list[str], data, start: str, end: str) -> None:
+    """Before a Korean-mode backtest, say how many LLM calls it will take, so
+    a free-tier quota is not discovered halfway through."""
+    from hedge_fund.backtesting.fund import build_schedule
+
+    try:
+        schedule = build_schedule(data, spec.benchmark, start, end, spec.rebalance)
+    except ValueError as exc:
+        console.print(f"[yellow]예상 LLM 호출 수를 계산하지 못했습니다: {exc}[/]")
+        return
+    estimate = llm_call_estimate(spec, universe, schedule)
+    agents = estimate["agents"]
+    console.print(
+        f"[bold]예상 LLM 호출 수[/] (LLM 에이전트 {len(agents)}개 {', '.join(agents) or '-'} × 종목 {len(universe)}개)\n"
+        f"  거래일 {estimate['sessions']}일 중 평가일(리밸런싱) {estimate['assessments']}일 "
+        f"({', '.join(schedule.assessment_dates)})\n"
+        f"  {len(agents) * len(universe)} × {estimate['assessments']} = [bold]{estimate['calls']}회[/] "
+        f"(평가일마다 그날 종가로 PER·PBR을 다시 계산하므로 날짜마다 새 호출. "
+        f"이미 성공한 호출은 캐시에서 읽어 빠짐. 재시도는 포함하지 않음)"
+    )
+
+
+def llm_call_estimate(spec, universe: list[str], schedule) -> dict:
+    """LLM agents × tickers × assessment dates (trading days only). Each
+    assessment re-prices the newest financials on that day's close, so every
+    date is its own prompt: this is the count a fresh run makes."""
+    from hedge_fund.signals import ALPHA_MODEL_REGISTRY, LLMAgent
+
+    agents = sorted({m.name for s in spec.strategies for m in s.models
+                     if issubclass(ALPHA_MODEL_REGISTRY[m.name], LLMAgent)})
+    assessments = len(schedule.assessment_dates)
+    return {"agents": agents, "sessions": len(schedule.closes), "assessments": assessments,
+            "calls": len(agents) * len(universe) * assessments}
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +336,9 @@ def _paper(args, parser: argparse.ArgumentParser, console: Console) -> None:
             spec = load_spec(args.mandate)
         except ValueError as exc:
             parser.error(str(exc))
+        if is_kr_mode():
+            with _data_client() as raw:
+                universe = _resolve_kr_universe(raw, universe, parser)
         try:
             directory = deploy(args.name, spec, universe, root=PAPER_DIR)
         except FileExistsError as exc:
@@ -271,7 +346,7 @@ def _paper(args, parser: argparse.ArgumentParser, console: Console) -> None:
         cadence = f"{spec.cadence_label}, {spec.window.label}" if spec.is_intraday else spec.cadence_label
         console.print(
             f"[bold]{args.name}[/] deployed at {directory}  ·  mandate {spec.name}  ·  "
-            f"{', '.join(universe)}  ·  ${spec.capital:,.0f}  ·  {cadence}"
+            f"{', '.join(universe)}  ·  {money(spec.capital)}  ·  {cadence}"
         )
         console.print(f"[dim]next: `aihf paper tick {args.name}` to run one session, `aihf paper run "
                       f"{args.name}` to leave it running, `aihf paper status {args.name}` any time[/]")
@@ -286,7 +361,7 @@ def _paper(args, parser: argparse.ArgumentParser, console: Console) -> None:
 
     if args.action == "tick":
         deployed = load_deployed(directory)
-        with FDClient() as raw:
+        with _data_client() as raw:
             fd = CachedDataClient(raw, live=deployed.spec.is_intraday)
             verb = "running the latest session again" if args.again else "advancing one session"
             with console.status(
@@ -309,7 +384,7 @@ def _paper(args, parser: argparse.ArgumentParser, console: Console) -> None:
             detail = fields.get("reason") or (f"{fields.get('bars_skipped')} bars skipped" if "bars_skipped" in fields else "")
             console.print(f"[yellow]{kind}[/] {fields.get('from') or 'start'} → {fields.get('to')}  {detail}".rstrip())
 
-        with FDClient() as raw:
+        with _data_client() as raw:
             try:
                 serve(directory, CachedDataClient(raw, live=spec.is_intraday),
                       on_record=lambda record: console.print(_tick_summary(deployed.name, record)),
@@ -371,11 +446,11 @@ def _status_line(directory: Path) -> str:
     latest = ledger.latest()
     halted = ledger.halted()
     if latest is None:
-        state = f"not started  ·  ${deployed.spec.capital:,.0f}"
+        state = f"not started  ·  {money(deployed.spec.capital)}"
     else:
         ret = latest.nav / deployed.spec.capital - 1
         state = (f"{len(ledger.sessions())} sessions  ·  last {latest.session}  ·  "
-                 f"NAV ${latest.nav:,.2f} ({ret:+.2%})")
+                 f"NAV {money(latest.nav, 2)} ({ret:+.2%})")
     flag = f"  ·  HALTED: {halted}" if halted else ""
     running = "  ·  running" if is_running(directory) else ""
     return (f"{deployed.name:<18} {deployed.spec.name}  ·  {' '.join(deployed.universe)}  ·  "
@@ -383,9 +458,9 @@ def _status_line(directory: Path) -> str:
 
 
 def _tick_summary(name: str, record: SessionRecord) -> str:
-    parts = [f"[bold]{name}[/] · session {record.session} · NAV ${record.nav:,.2f}"]
+    parts = [f"[bold]{name}[/] · session {record.session} · NAV {money(record.nav, 2)}"]
     if record.executed is not None:
-        costs = f", costs ${record.executed.trading_cost:,.2f}" if record.executed.trading_cost else ""
+        costs = f", costs {money(record.executed.trading_cost, 2)}" if record.executed.trading_cost else ""
         parts.append(f"executed {len(record.executed.orders)} orders from {record.executed.as_of}{costs}")
     if record.decision is not None and record.decision.is_stopped_out:
         stop = next(c for c in record.decision.clamps if c.limit == "max_drawdown_pct")

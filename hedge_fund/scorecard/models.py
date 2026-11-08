@@ -47,6 +47,20 @@ class Scorecard(BaseModel):
     strategies: list[StrategyScore]
     fund_pnl: float                   # pre-fill equity, last execution minus first
     trading_cost: float               # spread and commission paid inside that window
+    # The rest of the run, so the pieces add up to the fund's whole return:
+    #   start_nav + pnl_before_window + fund_pnl + pnl_after_window == end_nav
+    window_start: str | None = None   # session of the first execution
+    window_end: str | None = None     # session of the last execution
+    start_nav: float | None = None    # equity going into the first session
+    end_nav: float | None = None      # NAV at the last session's close
+    pnl_before_window: float = 0.0    # start → first execution's pre-fill equity (normally 0: cash)
+    pnl_after_window: float = 0.0     # last execution's fills, then marks to the last close
+
+    @computed_field
+    @property
+    def total_pnl(self) -> float:
+        """end_nav − start_nav: what the run's return is measured on."""
+        return self.pnl_before_window + self.fund_pnl + self.pnl_after_window
 
     @computed_field
     @property

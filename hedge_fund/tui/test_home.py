@@ -13,11 +13,22 @@ from hedge_fund.tui.app import HedgeFundApp
 from hedge_fund.tui.fixtures import render
 
 
+def _owner_only(path) -> bool:
+    """POSIX: mode 0600. Windows has no group/other bits — chmod only sets the
+    read-only flag and st_mode always reads 0o666 — and the .env lives under
+    the user's profile, which Windows ACLs already keep private; there the
+    check is that the file stayed readable and writable by its owner."""
+    mode = stat.S_IMODE(path.stat().st_mode)
+    if os.name == "nt":
+        return bool(mode & stat.S_IRUSR and mode & stat.S_IWUSR)
+    return mode == 0o600
+
+
 @pytest.mark.parametrize("save", [True, False])
 def test_picker_and_masked_key_save_or_cancel(save, isolated_configuration):
     saved = isolated_configuration
-    saved.write_text("# keep this comment\nUNRELATED_KEY=untouched\n")
-    original = saved.read_text()
+    saved.write_text("# keep this comment\nUNRELATED_KEY=untouched\n", encoding="utf-8")
+    original = saved.read_text(encoding="utf-8")
 
     async def scenario():
         app = HedgeFundApp()
@@ -41,11 +52,11 @@ def test_picker_and_masked_key_save_or_cancel(save, isolated_configuration):
             assert isinstance(app.screen, home.HomeScreen)
             if save:
                 assert os.environ["TYPESAFE_API_KEY"] == entry.value
-                assert saved.read_text() == original + f"TYPESAFE_API_KEY={entry.value}\n"
-                assert stat.S_IMODE(saved.stat().st_mode) == 0o600
+                assert saved.read_text(encoding="utf-8") == original + f"TYPESAFE_API_KEY={entry.value}\n"
+                assert _owner_only(saved)
             else:
                 assert "TYPESAFE_API_KEY" not in os.environ
-                assert saved.read_text() == original
+                assert saved.read_text(encoding="utf-8") == original
 
     asyncio.run(scenario())
 
@@ -79,8 +90,8 @@ def test_data_credential_gate_takes_a_key_or_a_wallet(monkeypatch, isolated_conf
             await pilot.press("enter")
             resumed.assert_called_once()
             assert os.environ[env_var] == "fixture-secret-value"
-            assert isolated_configuration.read_text() == f"{env_var}=fixture-secret-value\n"
-            assert stat.S_IMODE(isolated_configuration.stat().st_mode) == 0o600
+            assert isolated_configuration.read_text(encoding="utf-8") == f"{env_var}=fixture-secret-value\n"
+            assert _owner_only(isolated_configuration)
             assert home.demand_run_keys(app, resumed) is True
 
     asyncio.run(scenario())
@@ -119,9 +130,9 @@ def test_missing_key_gate_save_resumes_and_cancel_does_not(monkeypatch, isolated
     ],
 )
 def test_credential_precedence(exported, local, expected, isolated_configuration, tmp_path, monkeypatch):
-    isolated_configuration.write_text("TYPESAFE_API_KEY=saved-key\n")
+    isolated_configuration.write_text("TYPESAFE_API_KEY=saved-key\n", encoding="utf-8")
     if local:
-        (tmp_path / ".env").write_text(f"TYPESAFE_API_KEY={local}\n")
+        (tmp_path / ".env").write_text(f"TYPESAFE_API_KEY={local}\n", encoding="utf-8")
     if exported:
         monkeypatch.setenv("TYPESAFE_API_KEY", exported)
     keys.apply_credentials()

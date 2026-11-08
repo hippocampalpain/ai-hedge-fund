@@ -37,7 +37,7 @@ class PromptCache:
         if not path.exists():
             return None
         try:
-            return json.loads(path.read_text())
+            return json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return None  # corrupt cache entry -> treat as miss, will be rewritten
 
@@ -45,4 +45,4 @@ class PromptCache:
         self._dir.mkdir(parents=True, exist_ok=True)
         record = {**record, "created_at": datetime.now(timezone.utc).isoformat()}
         path = self._dir / f"{key}.json"
-        path.write_text(json.dumps(record, indent=2))
+        path.write_text(json.dumps(record, indent=2), encoding="utf-8")

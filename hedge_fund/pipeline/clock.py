@@ -6,7 +6,8 @@ what everything is worth at a session. A daily fund answers with completed
 New York dates and daily closes; a minute fund with bar boundaries and the
 prices at them. The engine does not know which it is holding.
 
-    DailyClock  completed dates, previous calendar day, exact daily closes
+    DailyClock  completed dates, previous session (the previous calendar
+                day when no trading grid is given), exact daily closes
     LiveClock   real-time snapshots taken at the boundary — a minute fund's
                 paper runner
     BarClock    historical minute bars, for a provider that serves them;
@@ -21,9 +22,10 @@ reads the same price the engine executes with and never the wire.
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from math import isfinite
 from typing import Callable, Protocol
 
@@ -62,15 +64,31 @@ class Clock(Protocol):
 
 
 class DailyClock:
-    """Today's behaviour, unchanged: sessions are completed NY dates."""
+    """Sessions are completed dates.
 
-    def __init__(self, data: DataClient) -> None:
+    Given *sessions* — the trading grid a backtest replays (the benchmark's
+    real trading days) — the information cutoff for a decision executing at a
+    session is the previous trading session, so analysts are only ever asked
+    about trading days. Without a grid (paper runs) it is the previous
+    calendar day, as before.
+    """
+
+    def __init__(self, data: DataClient, sessions: list[str] | None = None,
+                 benchmark: str | None = None) -> None:
         self._data = data
+        self._sessions = sorted(sessions) if sessions else None
+        # Without a grid but with a benchmark (Korean-mode paper runs), the
+        # previous session is read off the benchmark's own trading days.
+        self._benchmark = benchmark
 
     def is_complete(self, session: str) -> bool:
         return session <= completed_through()
 
     def previous(self, session: str) -> str:
+        if self._sessions:
+            return previous_session_on_grid(self._sessions, session)
+        if self._benchmark:
+            return previous_benchmark_session(self._data, self._benchmark, session)
         return previous_day(session)
 
     def marks(self, tickers: list[str], session: str) -> Marked:
@@ -78,6 +96,24 @@ class DailyClock:
 
     def session_date(self, session: str) -> str:
         return session
+
+
+def previous_session_on_grid(sessions: list[str], session: str) -> str:
+    """The last trading day on the sorted grid *sessions* before *session*;
+    the previous calendar day when the grid has none before it."""
+    i = bisect_left(sessions, session[:10])
+    return sessions[i - 1] if i > 0 else previous_day(session)
+
+
+def previous_benchmark_session(data: DataClient, benchmark: str, session: str, lookback_days: int = 20) -> str:
+    """The benchmark's last trading day before *session* (its real calendar:
+    weekends and exchange holidays skipped); the previous calendar day when
+    it printed nothing in the lookback window."""
+    day = session[:10]
+    start = (datetime.fromisoformat(day) - timedelta(days=lookback_days)).date().isoformat()
+    before = sorted(bar.time[:10] for bar in data.get_prices(benchmark, start, previous_day(day))
+                    if bar.time[:10] < day)
+    return before[-1] if before else previous_day(day)
 
 
 def exact_marks(tickers: list[str], session: str, data_client: DataClient) -> dict[str, float]:
@@ -212,7 +248,11 @@ def clock_for(spec: FundSpec, data: DataClient, *, live: bool = False) -> Clock:
     """The clock a mandate runs on: daily closes, or bars — historical for
     a backtest, live prints for the paper runner."""
     if not spec.is_intraday:
-        return DailyClock(data)
+        # Korean mode: a decision's refresh cutoff is the previous KRX
+        # trading day, never a weekend or holiday. US mode keeps the
+        # calendar day before (unchanged behaviour).
+        from hedge_fund.data.provider import is_kr_mode
+        return DailyClock(data, benchmark=spec.benchmark) if is_kr_mode() else DailyClock(data)
     if live:
         return LiveClock(data, spec.interval_seconds, spec.window)
     return BarClock(data, spec.interval_seconds, spec.window)

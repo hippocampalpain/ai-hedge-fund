@@ -14,14 +14,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
+import random
 import re
+import threading
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Protocol, runtime_checkable
+from typing import ClassVar, Protocol, runtime_checkable
 
 import requests
 
@@ -34,6 +37,13 @@ from hedge_fund.llm.registry import (
 )
 
 DEFAULT_MODEL = "claude-opus-5-5"
+# Korean mode (DATA_PROVIDER=kr) defaults to a free-tier Gemini Flash model.
+# "-latest" aliases track Google's current Flash release, so the default does
+# not go stale. Override with HEDGE_FUND_LLM_MODEL or --model
+# (e.g. gemini-flash-lite-latest for higher free-tier limits).
+KR_DEFAULT_MODEL = "gemini-flash-latest"
+
+logger = logging.getLogger(__name__)
 
 # Called with each piece of text as it arrives. None means don't stream.
 TokenListener = Callable[[str], None] | None
@@ -81,12 +91,19 @@ class ChatLLM:
     the prompt cache, and the parse are untouched by it.
     """
 
-    def __init__(self, model: str, chat, on_token: TokenListener = None) -> None:
+    def __init__(self, model: str, chat, on_token: TokenListener = None,
+                 rate_limit: RateLimitPolicy | None = None) -> None:
         self.model = model
         self._chat = chat
         self._on_token = on_token
+        self._rate_limit = rate_limit
 
     def complete(self, system: str, user: str) -> str:
+        if self._rate_limit is None:
+            return self._complete(system, user)
+        return self._rate_limit.call(lambda: self._complete(system, user), self.model)
+
+    def _complete(self, system: str, user: str) -> str:
         messages = [("system", system), ("human", user)]
         if self._on_token is None:
             return _flatten(self._chat.invoke(messages).content)
@@ -101,6 +118,176 @@ class ChatLLM:
                 parts.append(text)
                 self._on_token(text)
         return "".join(parts)
+
+
+class RateLimitPolicy:
+    """Free-tier guard: at most *max_concurrency* calls in flight (process
+    wide, across threads) and exponential backoff on
+
+    - 429 / RESOURCE_EXHAUSTED (quota): up to *max_retries* retries;
+    - transient server or network failures — HTTP 500/502/503/504,
+      DEADLINE_EXCEEDED ("Deadline expired"), UNAVAILABLE, timeouts — up to
+      *transient_retries* retries.
+
+    Delay before retry n (0-based, counted per kind) is
+    min(max_delay, base_delay * 2**n) plus up to 1s of jitter, or the
+    server's own "retry in Ns" hint when longer. Any other error (bad
+    request, bad key …) is raised at once — the agent abstains, as before.
+
+    A 429 whose server hint asks for more than *max_hint* seconds ("Please
+    retry in 44m10s", retry_delay { seconds: 2650 }) is not retried: the
+    agent abstains at once instead of sleeping through six backoffs. When it
+    is the free tier's *daily* quota (quota_id …PerDay…), that is logged as
+    such, and further calls to the same model fail fast — without spending
+    a request — until the hinted time has passed.
+
+    Tunable from the environment: LLM_MAX_CONCURRENCY (default 1),
+    LLM_MAX_RETRIES (6), LLM_TRANSIENT_RETRIES (3), LLM_RETRY_BASE_SECONDS (5),
+    LLM_RETRY_MAX_SECONDS (120), LLM_MAX_RETRY_HINT_SECONDS (60).
+    """
+
+    _semaphores: dict[int, threading.BoundedSemaphore] = {}
+    _lock = threading.Lock()
+    # model → monotonic time until which its daily quota is known spent (process wide)
+    _exhausted: ClassVar[dict[str, float]] = {}
+
+    def __init__(self, max_concurrency: int = 1, max_retries: int = 6, base_delay: float = 5.0,
+                 max_delay: float = 120.0, sleep: Callable[[float], None] = time.sleep,
+                 transient_retries: int = 3, max_hint: float = 60.0,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        self.max_concurrency = max(1, max_concurrency)
+        self.max_retries = max(0, max_retries)
+        self.transient_retries = max(0, transient_retries)
+        self.base_delay = base_delay
+        self.max_delay = max_delay
+        self.max_hint = max_hint
+        self._sleep = sleep
+        self._clock = clock
+        with self._lock:
+            self._gate = self._semaphores.setdefault(
+                self.max_concurrency, threading.BoundedSemaphore(self.max_concurrency))
+
+    @classmethod
+    def from_env(cls) -> RateLimitPolicy:
+        return cls(
+            max_concurrency=int(os.environ.get("LLM_MAX_CONCURRENCY", "1")),
+            max_retries=int(os.environ.get("LLM_MAX_RETRIES", "6")),
+            transient_retries=int(os.environ.get("LLM_TRANSIENT_RETRIES", "3")),
+            max_hint=float(os.environ.get("LLM_MAX_RETRY_HINT_SECONDS", "60")),
+            base_delay=float(os.environ.get("LLM_RETRY_BASE_SECONDS", "5")),
+            max_delay=float(os.environ.get("LLM_RETRY_MAX_SECONDS", "120")),
+        )
+
+    def call(self, fn: Callable[[], str], model: str = "") -> str:
+        with self._gate:
+            until = self._exhausted.get(model)
+            if until is not None:
+                if self._clock() < until:
+                    raise QuotaExhausted(
+                        f"{model}: 하루 무료 한도 소진 — 약 {(until - self._clock()) / 60:.0f}분 뒤까지 호출하지 않음 "
+                        "(429 daily quota; skipped without a request)")
+                self._exhausted.pop(model, None)
+            limited = transient = 0
+            while True:
+                try:
+                    return fn()
+                except Exception as exc:
+                    hint = retry_hint_seconds(str(exc)) if is_rate_limited(exc) else None
+                    if hint is not None and hint > self.max_hint:
+                        self._give_up(model, exc, hint)
+                        raise
+                    if is_rate_limited(exc) and limited < self.max_retries:
+                        delay = self.delay(limited, str(exc))
+                        limited += 1
+                        logger.warning("%s rate-limited (429/RESOURCE_EXHAUSTED); retry %d/%d in %.0fs",
+                                       model, limited, self.max_retries, delay)
+                    elif is_transient(exc) and transient < self.transient_retries:
+                        delay = self.delay(transient, str(exc))
+                        transient += 1
+                        logger.warning("%s transient error (%s); retry %d/%d in %.0fs",
+                                       model, _short(exc), transient, self.transient_retries, delay)
+                    else:
+                        raise
+                    self._sleep(delay)
+
+    def _give_up(self, model: str, exc: BaseException, hint: float) -> None:
+        minutes = hint / 60
+        if is_daily_quota(str(exc)):
+            limit = re.search(r"quota_value:\s*(\d+)|limit:\s*(\d+)", str(exc))
+            count = next((g for g in limit.groups() if g), None) if limit else None
+            self._exhausted[model] = self._clock() + hint
+            logger.error("%s: Gemini 하루 무료 한도%s를 다 썼습니다 (429, 일일 한도). 약 %.0f분 뒤에 풀립니다. "
+                         "재시도하지 않고 이 호출은 기권하며, 그때까지 이 모델의 다른 호출도 요청 없이 기권합니다. "
+                         "다른 모델로 바꾸려면 HEDGE_FUND_LLM_MODEL=gemini-flash-lite-latest",
+                         model, f"({count}회)" if count else "", minutes)
+        else:
+            logger.warning("%s: 429 rate-limited and the server asks to wait %.0fs (> %.0fs); "
+                           "not retrying — this call abstains", model, hint, self.max_hint)
+
+    def delay(self, attempt: int, message: str = "") -> float:
+        backoff = min(self.max_delay, self.base_delay * (2 ** attempt))
+        hint = retry_hint_seconds(message)
+        if hint is not None:
+            backoff = max(backoff, min(self.max_delay, hint))
+        return backoff + random.uniform(0, 1)
+
+
+class QuotaExhausted(RuntimeError):
+    """A model's daily quota is known to be spent: the call is not even sent."""
+
+
+_HINT_TEXT = re.compile(r"retry in\s+((?:\d+(?:\.\d+)?\s*[hms]\s*)+)", re.IGNORECASE)
+_HINT_PROTO = re.compile(r"retry_delay\s*\{\s*seconds:\s*(\d+)", re.IGNORECASE)
+
+
+def retry_hint_seconds(message: str) -> float | None:
+    """The wait a 429 asks for, in seconds: "Please retry in 37.2s",
+    "retry in 44m10.16s", "retry in 1h2m", or the proto field
+    retry_delay { seconds: 2650 }. The longest one found; None when absent."""
+    found: list[float] = []
+    for match in _HINT_TEXT.finditer(message):
+        total = 0.0
+        for amount, unit in re.findall(r"(\d+(?:\.\d+)?)\s*([hms])", match.group(1), re.IGNORECASE):
+            total += float(amount) * {"h": 3600, "m": 60, "s": 1}[unit.lower()]
+        found.append(total)
+    found += [float(m.group(1)) for m in _HINT_PROTO.finditer(message)]
+    return max(found) if found else None
+
+
+def is_daily_quota(message: str) -> bool:
+    """The free tier's per-day request quota (not the per-minute one)."""
+    text = message.lower()
+    return "perday" in text or "per day" in text
+
+
+def is_rate_limited(exc: BaseException) -> bool:
+    """429 / RESOURCE_EXHAUSTED, however the SDK wraps it."""
+    text = f"{type(exc).__name__} {exc}"
+    return ("429" in text or "RESOURCE_EXHAUSTED" in text or "ResourceExhausted" in text
+            or "rate limit" in text.lower())
+
+
+_TRANSIENT_STATUS = re.compile(r"\b(500|502|503|504)\b")
+_TRANSIENT_WORDS = ("deadline expired", "deadline_exceeded", "deadlineexceeded", "unavailable",
+                    "serviceunavailable", "internalservererror", "internal server error",
+                    "bad gateway", "gateway timeout", "timed out", "timeout", "temporarily",
+                    "connection reset", "connection aborted", "remotedisconnected")
+
+
+def is_transient(exc: BaseException) -> bool:
+    """A failure worth retrying: 5xx (500/502/503/504), a deadline or
+    timeout, an unavailable server, a dropped connection. Not 429 (that has
+    its own budget) and not client errors such as 400/401/403."""
+    if is_rate_limited(exc):
+        return False
+    if isinstance(exc, TimeoutError | ConnectionError):
+        return True
+    text = f"{type(exc).__name__} {exc}"
+    return bool(_TRANSIENT_STATUS.search(text)) or any(w in text.lower() for w in _TRANSIENT_WORDS)
+
+
+def _short(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {str(exc)[:80]}"
 
 
 class JevLLM:
@@ -234,8 +421,10 @@ def make_llm(
     same seam the TUI's picker writes to. Raises with the name of the missing
     environment variable, because that is the only thing the user can act on.
     """
-    model = model or os.environ.get("HEDGE_FUND_LLM_MODEL") or DEFAULT_MODEL
+    model = model or os.environ.get("HEDGE_FUND_LLM_MODEL") or _default_model()
     provider = provider_for(model)
+    if provider is None and model.startswith("gemini"):
+        provider = "Google"  # e.g. a Gemini id newer than the registry
     if provider is None:
         # Unlisted ids still work: a model newer than the registry should not
         # need a code change. Anthropic is the default transport.
@@ -266,8 +455,16 @@ def make_llm(
                             max_retries=1)
     elif provider == "Google":
         from langchain_google_genai import ChatGoogleGenerativeAI
+        # Flash "thinking" models can take well over a minute on a long
+        # prompt; at 60s Google answers 504 "Deadline expired". The request
+        # deadline is GEMINI_TIMEOUT_SECONDS (default 180, never below the
+        # caller's timeout).
+        gemini_timeout = max(timeout, float(os.environ.get("GEMINI_TIMEOUT_SECONDS", "180")))
         chat = ChatGoogleGenerativeAI(model=model, api_key=api_key,
-                                      timeout=timeout, max_retries=1)
+                                      timeout=gemini_timeout, max_retries=1)
+        # Free-tier quotas are per minute and per day: one call at a time,
+        # exponential backoff on 429 and on 5xx / deadline errors (RateLimitPolicy).
+        return ChatLLM(model, chat, on_token, rate_limit=RateLimitPolicy.from_env())
     elif provider == "xAI":
         from langchain_xai import ChatXAI
         chat = ChatXAI(model=model, api_key=api_key, timeout=timeout,
@@ -284,6 +481,12 @@ def make_llm(
         raise ValueError(f"Unhandled provider {provider}")
 
     return ChatLLM(model, chat, on_token)
+
+
+def _default_model() -> str:
+    from hedge_fund.data.provider import is_kr_mode
+
+    return KR_DEFAULT_MODEL if is_kr_mode() else DEFAULT_MODEL
 
 
 def AnthropicLLM(model: str | None = None, **kwargs) -> LLMClient:  # noqa: N802

@@ -19,6 +19,7 @@ from rich.text import Text
 
 from hedge_fund.backtesting import performance_metrics
 from hedge_fund.data import FDClient, FDClientError, has_data_credential, PriceSnapshot
+from hedge_fund.data.provider import is_kr_mode, make_data_client
 from hedge_fund.data.bars import bar_time, bars_per_day, is_intraday
 from hedge_fund.data.sessions import NEW_YORK
 from hedge_fund.fund import FundSpec
@@ -32,6 +33,7 @@ from hedge_fund.pipeline import (
 from hedge_fund.tui.palette import BRIGHT, CYAN, GREEN, MUTED, RED, TEXT
 from hedge_fund.tui.report import session_row, weights_line
 from hedge_fund.tui.shared import cadence_identity, render_area_chart, session_label
+from hedge_fund.money import money
 
 _PERIOD_WORD = {"daily": "day", "weekly": "week", "monthly": "month"}
 
@@ -39,6 +41,14 @@ _PERIOD_WORD = {"daily": "day", "weekly": "week", "monthly": "month"}
 # The reason the app's `h` writes to the kill switch. The ledger wants one for
 # `aihf paper status` and the event log; the app does not ask, so it is not shown.
 APP_HALT = "halted in the app"
+
+
+def _data_client():
+    """FDClient, or the Korean provider when DATA_PROVIDER=kr. FDClient is
+    looked up at call time so tests that patch this module's FDClient work."""
+    if is_kr_mode():
+        return make_data_client()
+    return FDClient()
 
 
 LIVE_REFRESH = 30  # seconds between quote refreshes while the paper list is up
@@ -240,9 +250,10 @@ def live_rows(
     today = today or datetime.now(NEW_YORK).date().isoformat()
     stale = newest.date().isoformat() < today
     tone = MUTED if stale else GREEN if change >= 0 else RED
-    when = newest.strftime("%b %-d %H:%M") if stale else newest.strftime("%H:%M")
+    # "%-d" (no leading zero) is glibc-only and raises on Windows; build the day by hand.
+    when = f"{newest:%b} {newest.day} {newest:%H:%M}" if stale else f"{newest:%H:%M}"
     return [("Live", Text.assemble(
-        (f"${value:,.0f}", MUTED if stale else TEXT),
+        (f"{money(value)}", MUTED if stale else TEXT),
         (f"   {change:+.2%}", tone),
         (f"   as of {when} ET", MUTED)))]
 
@@ -260,7 +271,7 @@ def paper_detail(
     staff = ", ".join(s.title for s in spec.strategies)
     parts: list = [
         Text.assemble((snap.deployed.name, f"bold {BRIGHT}"), "   ", snap.badge()),
-        Text(f"{staff} · {cadence_identity(spec)} · ${spec.capital:,.0f} · {' '.join(snap.deployed.universe)}",
+        Text(f"{staff} · {cadence_identity(spec)} · {money(spec.capital)} · {' '.join(snap.deployed.universe)}",
              style=MUTED),
         Text(""),
     ]
@@ -277,7 +288,7 @@ def paper_detail(
         n = len(snap.records)
         ret, bench_ret = m.total_return_pct, m.benchmark_return_pct
         parts += [Text(""), _section("PERFORMANCE"), _facts([
-            ("Value", f"${snap.nav:,.0f}"),
+            ("Value", f"{money(snap.nav)}"),
             ("Return", Text.assemble((f"{ret:+.1%}", GREEN if ret >= 0 else RED),
                                      (f"   {spec.benchmark} {bench_ret:+.1%}", MUTED))),
             ("Since", Text(f"{snap.records[0].session} · {n} {'session' if n == 1 else 'sessions'}"
@@ -305,7 +316,7 @@ def fetch_snapshots(tickers: list[str]) -> dict[str, PriceSnapshot]:
         return {}
     quotes: dict[str, PriceSnapshot] = {}
     try:
-        with FDClient() as fd, ThreadPoolExecutor(max_workers=min(8, len(tickers))) as pool:
+        with _data_client() as fd, ThreadPoolExecutor(max_workers=min(8, len(tickers))) as pool:
             for ticker, snapshot in zip(tickers, pool.map(fd.get_snapshot, tickers)):
                 if snapshot is not None:
                     quotes[ticker] = snapshot

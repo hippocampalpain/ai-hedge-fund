@@ -5,14 +5,17 @@ from math import isfinite
 from zoneinfo import ZoneInfo
 
 from hedge_fund.data.protocol import DataClient
+from hedge_fund.data.provider import market_timezone
 
 NEW_YORK = ZoneInfo("America/New_York")
 
 
 def completed_through(now: datetime | None = None) -> str:
-    """Exclude the current New York date, even after market close. *now*
+    """Exclude the current exchange-local date, even after market close:
+    New York for US data, Seoul in Korean mode (DATA_PROVIDER=kr). *now*
     is for a caller that keeps its own clock (the runner, tests)."""
-    moment = now.astimezone(NEW_YORK) if now is not None else datetime.now(NEW_YORK)
+    tz = market_timezone()
+    moment = now.astimezone(tz) if now is not None else datetime.now(tz)
     return (moment.date() - timedelta(days=1)).isoformat()
 
 

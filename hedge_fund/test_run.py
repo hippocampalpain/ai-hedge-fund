@@ -59,7 +59,7 @@ def _mandate(tmp_path, mode="long_short", name="mixed"):
                     risk={"max_position_pct": .25, "max_gross_exposure": 1})
     spec.strategies[0].blend.mode = mode
     path = tmp_path / f"{name}.yaml"
-    path.write_text(yaml.safe_dump(spec.model_dump()))
+    path.write_text(yaml.safe_dump(spec.model_dump()), encoding="utf-8")
     return path
 
 
@@ -79,7 +79,7 @@ def test_cli_rejects_invalid_configuration_before_clients(tmp_path, monkeypatch,
     else:
         data["strategies"][0]["blend"]["mode"] = "invalid"
     path = tmp_path / "fund.yaml"
-    path.write_text(yaml.safe_dump(data))
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
     original = path.read_bytes()
     forbidden = Mock(side_effect=AssertionError("external activity"))
     monkeypatch.setattr(run, "apply_credentials", lambda: None)
@@ -127,7 +127,7 @@ def test_backtest_prints_json_and_files_a_research_copy(tmp_path, monkeypatch, c
         assert sum(cycle["final_weights"].values()) == pytest.approx(0)
     assert "1 rebalances" in output.err and "sessions" in output.err
     saved = list((tmp_path / "research").glob("mixed-2025-01-06-2025-01-13-*.json"))
-    assert len(saved) == 1 and json.loads(saved[0].read_text()) == result
+    assert len(saved) == 1 and json.loads(saved[0].read_text(encoding="utf-8")) == result
     assert not (tmp_path / "paper").exists()  # research never touches the paper funds
 
 
@@ -209,7 +209,7 @@ def test_paper_minute_fund_ticks_and_runs_like_a_daily_one(tmp_path, monkeypatch
                     risk={"max_position_pct": .25, "max_gross_exposure": 1},
                     rebalance="minute", interval=0.5, window={"start": "09:30", "end": "12:00"})
     path = tmp_path / "bars.yaml"
-    path.write_text(yaml.safe_dump(spec.model_dump()))
+    path.write_text(yaml.safe_dump(spec.model_dump()), encoding="utf-8")
 
     _main(monkeypatch, "paper", "create", "fast", "--mandate", str(path), "--universe", "AAPL")
     err = " ".join(capsys.readouterr().err.split())  # the console wraps; read it as one line
@@ -260,7 +260,7 @@ def test_paper_minute_fund_ticks_and_runs_like_a_daily_one(tmp_path, monkeypatch
     assert "fast" in err and "every 30s" in err and "gap start → 2025-01-07T09:30:00  3 bars skipped" in err
     assert "stopped" in err
 
-    (seen["pid"]).write_text(str(os.getpid()))
+    (seen["pid"]).write_text(str(os.getpid()), encoding="utf-8")
     _main(monkeypatch, "paper", "list")
     assert "running" in capsys.readouterr().out
     monkeypatch.setattr(run, "stop_runner", lambda directory: True)

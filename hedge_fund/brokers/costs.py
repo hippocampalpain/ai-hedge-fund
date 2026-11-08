@@ -30,7 +30,7 @@ from __future__ import annotations
 from math import sqrt
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 
 class TradingCosts(BaseModel):
@@ -47,6 +47,16 @@ class TradingCosts(BaseModel):
     impact_coefficient: float = Field(
         default=1.0, ge=0,
         description="Y in the square-root law: impact = Y * daily volatility * sqrt(order / ADV)",
+    )
+    # 한국 모드용(거래대금 비례). 기본값 0이면 직렬화에서 빠지므로 기존
+    # 미국 mandate의 ledger 해시는 바뀌지 않는다.
+    commission_rate: float = Field(
+        default=0.0, ge=0, lt=1,
+        description="broker commission as a fraction of traded notional, both sides (e.g. 0.00015 = 0.015%)",
+    )
+    sell_tax_rate: float = Field(
+        default=0.0, ge=0, lt=1,
+        description="transaction tax as a fraction of notional, charged on sells only (Korean securities transaction tax)",
     )
     min_trade_pct: float = Field(
         default=0.005, ge=0, lt=1,
@@ -69,5 +79,18 @@ class TradingCosts(BaseModel):
         """The square-root law, as a fraction of the mark."""
         return self.impact_coefficient * volatility * sqrt(participation)
 
-    def commission(self, quantity: int) -> float:
-        return quantity * self.commission_per_share
+    def commission(self, quantity: int, notional: float = 0.0, side: Literal["buy", "sell"] = "buy") -> float:
+        """Per-share commission, plus (Korean mode) a rate on *notional*
+        and a tax on sells. Both rates default to zero."""
+        fee = quantity * self.commission_per_share + abs(notional) * self.commission_rate
+        if side == "sell":
+            fee += abs(notional) * self.sell_tax_rate
+        return fee
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler):
+        data = handler(self)
+        for name in ("commission_rate", "sell_tax_rate"):
+            if data.get(name) == 0.0:
+                data.pop(name, None)
+        return data

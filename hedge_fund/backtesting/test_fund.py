@@ -406,3 +406,32 @@ def test_a_mandate_with_an_allocator_records_the_weights_each_decision_used():
     assert [d.allocation.strategies["solo"].n for d in decisions] == [0, 0, 1]
     assert all(r.hash == r.compute_hash() for r in result.records)
     assert all(r.decision.allocation is None for r in _run().records if r.decision is not None)
+
+
+# ---------------------------------------------------------------------------
+# Assessment dates are trading days only
+# ---------------------------------------------------------------------------
+
+def test_a_friday_start_never_assesses_the_weekend():
+    """Friday's decision executes Monday; the refresh cutoff is the previous
+    trading session (Friday itself), not Sunday."""
+    from hedge_fund.backtesting.fund import build_schedule
+    schedule = build_schedule(FakeDataClient(SERIES), "SPY", "2024-06-07", "2024-06-21", "weekly")
+    assert schedule.execution_dates == {"2024-06-07": "2024-06-10", "2024-06-10": "2024-06-11",
+                                        "2024-06-17": "2024-06-18"}
+    assert schedule.assessment_dates == ["2024-06-07", "2024-06-10", "2024-06-17"]
+    assert set(schedule.assessment_dates) <= set(WEEKDAYS)
+
+
+def test_analysts_are_only_asked_about_trading_days():
+    asked = []
+
+    class Spy(FakeAnalyst):
+        def predict(self, ticker, date, data_client):
+            asked.append(date)
+            return super().predict(ticker, date, data_client)
+
+    fund = Fund(_spec(), models={"solo": [Spy("a", views={"AAPL": 1.0})]})
+    result = backtest_fund(fund, "2024-06-07", "2024-06-21", FakeDataClient(SERIES), ["AAPL"])
+    assert asked and set(asked) <= set(result.dates)
+    assert sorted(set(asked)) == ["2024-06-07", "2024-06-10", "2024-06-17"]  # one ask per rebalance

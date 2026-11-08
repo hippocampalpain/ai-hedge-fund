@@ -43,6 +43,6 @@ def save_spec(spec: FundSpec, directory: str | Path) -> Path:
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{spec.name}.yaml"
-    with path.open("x") as output:
+    with path.open("x", encoding="utf-8") as output:
         output.write(yaml.safe_dump(spec.model_dump(), sort_keys=False))
     return path

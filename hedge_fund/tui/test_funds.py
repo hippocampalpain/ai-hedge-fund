@@ -20,7 +20,7 @@ def test_both_pickers_disable_only_invalid_configurations():
              "mixed.yaml": yaml.safe_dump(make_spec().model_dump()),
              "valid.yaml": yaml.safe_dump(make_spec(["pead"], "ready").model_dump())}
     for name, content in files.items():
-        (paths.MANDATES_DIR / name).write_text(content)
+        (paths.MANDATES_DIR / name).write_text(content, encoding="utf-8")
 
     async def scenario():
         app = HedgeFundApp()
@@ -42,11 +42,11 @@ def test_both_pickers_disable_only_invalid_configurations():
             assert menu.option_count == 4
             assert sum(menu.get_option_at_index(i).disabled for i in range(4)) == 2
     asyncio.run(scenario())
-    assert {p.name: p.read_text() for p in paths.MANDATES_DIR.glob("*.yaml")} == files
+    assert {p.name: p.read_text(encoding="utf-8") for p in paths.MANDATES_DIR.glob("*.yaml")} == files
 
 
 def test_all_invalid_funds_do_not_crash_home_picker():
-    (paths.MANDATES_DIR / "old.yaml").write_text("name: old\n")
+    (paths.MANDATES_DIR / "old.yaml").write_text("name: old\n", encoding="utf-8")
     async def scenario():
         app = HedgeFundApp()
         async with app.run_test() as pilot:
@@ -65,7 +65,7 @@ def test_latest_backtest_sets_headline_regardless_of_version(newest_version):
     if newest_version is None:
         receipt["schema_version"] = 2
     older = paths.RESEARCH_DIR / "test-2025-01-01-2025-02-01-older.json"
-    older.write_text(json.dumps(receipt))
+    older.write_text(json.dumps(receipt), encoding="utf-8")
     os.utime(older, (1000, 1000))
     original = older.read_bytes()
     older_summary = research.summarize(older, 1000)
@@ -78,7 +78,7 @@ def test_latest_backtest_sets_headline_regardless_of_version(newest_version):
         receipt["schema_version"] = newest_version
     receipt["metrics"].update(total_return_pct=.3, excess_return_pct=.2)
     newer = paths.RESEARCH_DIR / "test-2025-01-01-2025-02-01-newer.json"
-    newer.write_text(json.dumps(receipt))
+    newer.write_text(json.dumps(receipt), encoding="utf-8")
     os.utime(newer, (2000, 2000))
     newer_summary = research.summarize(newer, 2000)
     assert research.last_score("test") == (.3, .2, "SPY")
@@ -91,7 +91,7 @@ def test_latest_backtest_sets_headline_regardless_of_version(newest_version):
 def test_history_rows_reopen_the_saved_result():
     record = make_cycle(make_signal())
     spec = record.spec
-    (paths.MANDATES_DIR / "test.yaml").write_text(yaml.safe_dump(spec.model_dump()))
+    (paths.MANDATES_DIR / "test.yaml").write_text(yaml.safe_dump(spec.model_dump()), encoding="utf-8")
     dates = ["2025-01-15", "2025-01-16"]
     nav, benchmark_nav = [100000, 110000], [100000, 101000]
     result = FundBacktestResult(
@@ -100,7 +100,7 @@ def test_history_rows_reopen_the_saved_result():
         records=[make_session(dates[0]), make_session(dates[1], executed=record, nav=110000)],
         metrics=performance_metrics(100000, dates, nav, benchmark_nav, [record]))
     saved = paths.RESEARCH_DIR / f"{spec.name}-{dates[0]}-{dates[-1]}-x.json"
-    saved.write_text(result.model_dump_json())
+    saved.write_text(result.model_dump_json(), encoding="utf-8")
 
     async def scenario():
         app = HedgeFundApp()
@@ -132,7 +132,7 @@ def test_history_rows_reopen_the_saved_result():
 
 
 def test_a_mandate_with_no_history_has_an_empty_run_list():
-    (paths.MANDATES_DIR / "test.yaml").write_text(yaml.safe_dump(make_spec().model_dump()))
+    (paths.MANDATES_DIR / "test.yaml").write_text(yaml.safe_dump(make_spec().model_dump()), encoding="utf-8")
     async def scenario():
         app = HedgeFundApp()
         async with app.run_test() as pilot:

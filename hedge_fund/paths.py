@@ -30,6 +30,7 @@ ENV_PATH = USER_DIR / ".env"
 # The example mandate ships inside the package; it is copied out (never read
 # in place) so users edit their copy, not the install.
 EXAMPLE_MANDATE = Path(__file__).resolve().parent / "fund" / "example.yaml"
+EXAMPLE_KR_MANDATE = Path(__file__).resolve().parent / "fund" / "example_kr.yaml"
 
 
 def ensure_mandates_dir() -> Path:
@@ -37,6 +38,9 @@ def ensure_mandates_dir() -> Path:
     if not MANDATES_DIR.exists():
         MANDATES_DIR.mkdir(parents=True)
         shutil.copy(EXAMPLE_MANDATE, MANDATES_DIR / "example.yaml")
+    # Korean mode (DATA_PROVIDER=kr) also gets the KOSPI example, once.
+    if os.environ.get("DATA_PROVIDER", "").strip().lower() == "kr" and not (MANDATES_DIR / "example_kr.yaml").exists():
+        shutil.copy(EXAMPLE_KR_MANDATE, MANDATES_DIR / "example_kr.yaml")
     return MANDATES_DIR
 
 

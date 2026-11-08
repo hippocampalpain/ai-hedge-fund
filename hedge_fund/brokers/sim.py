@@ -50,7 +50,8 @@ class SimBroker:
         price = order.price if self._costs is None else self._costs.fill_price(
             order.side, order.price, order.participation, order.volatility or 0.0,
         )
-        commission = 0.0 if self._costs is None else self._costs.commission(order.quantity)
+        commission = 0.0 if self._costs is None else self._costs.commission(
+            order.quantity, order.quantity * price, order.side)
 
         if order.side == "buy":
             self._shares[order.ticker] = self._shares.get(order.ticker, 0) + order.quantity

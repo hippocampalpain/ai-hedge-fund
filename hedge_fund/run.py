@@ -62,6 +62,7 @@ from rich.console import Console
 
 from hedge_fund.backtesting import backtest_fund, save_result
 from hedge_fund.data import CachedDataClient, FDClient
+from hedge_fund.data.provider import is_kr_mode, make_data_client
 from hedge_fund.data.bars import is_intraday
 from hedge_fund.data.sessions import completed_through
 from hedge_fund.fund import Fund, load_spec, normalize_universe
@@ -86,6 +87,14 @@ from hedge_fund.tui.keys import apply_credentials
 from hedge_fund.tui.report import cost_line
 from hedge_fund.tui.scorecard_view import analyst_table, strategy_table
 from hedge_fund.tui.shared import BACKTEST_DAYS
+
+
+def _data_client():
+    """FDClient, or the Korean provider when DATA_PROVIDER=kr. FDClient is
+    looked up at call time so tests that patch this module's FDClient work."""
+    if is_kr_mode():
+        return make_data_client()
+    return FDClient()
 
 
 def main() -> None:
@@ -185,7 +194,8 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-_UNIVERSE_HELP = "tickers to trade, comma or space separated, e.g. AAPL,MSFT,NVDA"
+_UNIVERSE_HELP = ("tickers to trade, comma or space separated, e.g. AAPL,MSFT,NVDA "
+                  "(DATA_PROVIDER=kr: 6자리 종목코드 또는 종목명, e.g. 005930,000660)")
 
 
 def _universe(text: str, parser: argparse.ArgumentParser) -> list[str]:
@@ -223,8 +233,11 @@ def _backtest(args, parser: argparse.ArgumentParser, console: Console) -> None:
     # did over the window, and that memory would otherwise score as skill.
     fund = Fund(spec, blind=True)
 
-    with FDClient() as raw:
+    with _data_client() as raw:
         fd = CachedDataClient(raw)
+        if is_kr_mode():
+            universe = _resolve_kr_universe(raw, universe, parser)
+            _print_llm_estimate(console, spec, universe, fd, start, end)
         with console.status(
             f"[cyan]{spec.name}: backtesting {start} → {end} "
             f"({spec.rebalance} rebalance vs {spec.benchmark}) "
@@ -252,6 +265,42 @@ def _backtest(args, parser: argparse.ArgumentParser, console: Console) -> None:
     console.print(f"[dim]saved to {saved}[/]")
 
 
+def _resolve_kr_universe(client, universe: list[str], parser: argparse.ArgumentParser) -> list[str]:
+    """Korean mode: '삼성전자' → '005930'; 6-digit codes pass through."""
+    try:
+        return normalize_universe([client.resolve(t) for t in universe])
+    except ValueError as exc:
+        parser.error(str(exc))
+
+
+def _print_llm_estimate(console: Console, spec, universe: list[str], data, start: str, end: str) -> None:
+    """Before a Korean-mode backtest, say how many LLM calls it can take, so
+    a free-tier quota is not discovered halfway through.
+
+    Upper bound = LLM agents × tickers × trading days (what was asked for).
+    Agents only reason on rebalance sessions, and an unchanged snapshot is a
+    prompt-cache hit, so the real count is at most agents × tickers ×
+    rebalances — usually far less."""
+    from hedge_fund.backtesting.fund import build_schedule
+    from hedge_fund.signals import ALPHA_MODEL_REGISTRY, LLMAgent
+
+    agents = sorted({m.name for s in spec.strategies for m in s.models
+                     if issubclass(ALPHA_MODEL_REGISTRY[m.name], LLMAgent)})
+    try:
+        schedule = build_schedule(data, spec.benchmark, start, end, spec.rebalance)
+    except ValueError as exc:
+        console.print(f"[yellow]예상 LLM 호출 수를 계산하지 못했습니다: {exc}[/]")
+        return
+    days, rebalances = len(schedule.closes), len(schedule.execution_dates)
+    n = len(agents) * len(universe)
+    console.print(
+        f"[bold]예상 LLM 호출 수[/] (LLM 에이전트 {len(agents)}개 {', '.join(agents) or '-'} × 종목 {len(universe)}개)\n"
+        f"  상한: {n} × 거래일 {days}일 = [bold]{n * days}회[/]\n"
+        f"  실제 최대: {n} × 리밸런싱 {rebalances}회 = [bold]{n * rebalances}회[/] "
+        f"(같은 재무 스냅샷은 캐시되어 실제로는 더 적음)"
+    )
+
+
 # ---------------------------------------------------------------------------
 # paper
 # ---------------------------------------------------------------------------
@@ -264,6 +313,9 @@ def _paper(args, parser: argparse.ArgumentParser, console: Console) -> None:
             spec = load_spec(args.mandate)
         except ValueError as exc:
             parser.error(str(exc))
+        if is_kr_mode():
+            with _data_client() as raw:
+                universe = _resolve_kr_universe(raw, universe, parser)
         try:
             directory = deploy(args.name, spec, universe, root=PAPER_DIR)
         except FileExistsError as exc:
@@ -286,7 +338,7 @@ def _paper(args, parser: argparse.ArgumentParser, console: Console) -> None:
 
     if args.action == "tick":
         deployed = load_deployed(directory)
-        with FDClient() as raw:
+        with _data_client() as raw:
             fd = CachedDataClient(raw, live=deployed.spec.is_intraday)
             verb = "running the latest session again" if args.again else "advancing one session"
             with console.status(
@@ -309,7 +361,7 @@ def _paper(args, parser: argparse.ArgumentParser, console: Console) -> None:
             detail = fields.get("reason") or (f"{fields.get('bars_skipped')} bars skipped" if "bars_skipped" in fields else "")
             console.print(f"[yellow]{kind}[/] {fields.get('from') or 'start'} → {fields.get('to')}  {detail}".rstrip())
 
-        with FDClient() as raw:
+        with _data_client() as raw:
             try:
                 serve(directory, CachedDataClient(raw, live=spec.is_intraday),
                       on_record=lambda record: console.print(_tick_summary(deployed.name, record)),

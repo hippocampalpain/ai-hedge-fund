@@ -21,6 +21,7 @@ from hedge_fund.tui.fixtures import (
     make_session,
     make_spec,
     render,
+    settle,
 )
 
 
@@ -147,7 +148,13 @@ def test_session_report_separates_the_executed_cycle_from_the_new_decision(size,
         async with app.run_test(size=size) as pilot:
             await app.push_screen(paper.SessionReportScreen("alpha", session))
             screen = app.screen
-            await pilot.pause()
+
+            def detail() -> str:
+                return render(screen.query_one("#detail-pane", Static).content)
+
+            # The screen highlights its first row on mount; wait until that has
+            # landed, or it can overwrite the row this test picks (seen on Windows).
+            await settle(pilot, lambda: detail().strip() != "")
             head = render(screen.query_one("#report-head", Static).content)
             footer = render(screen.query_one("#report-foot", Static).content)
             menu = screen.query_one("#report-nav", OptionList)
@@ -158,21 +165,20 @@ def test_session_report_separates_the_executed_cycle_from_the_new_decision(size,
                 assert "executed the 2025-01-15 decision (refreshed 2025-01-19)" in head
                 assert "x:sec:orders" in ids and "x:sec:portfolio" in ids
                 menu.highlighted = menu.get_option_index("x:sec:portfolio")
-                await pilot.pause()
-                assert "Target net" in render(screen.query_one("#detail-pane", Static).content)
+                await settle(pilot, lambda: "Target net" in detail())
+                assert "Target net" in detail()
             if what in ("decided", "both"):
                 assert "executes next session" in head
                 assert "d:sec:portfolio" in ids and "d:sec:orders" not in ids
                 menu.highlighted = menu.get_option_index("d:sec:portfolio")
-                await pilot.pause()
-                detail = render(screen.query_one("#detail-pane", Static).content)
-                assert "PROPOSED ALLOCATIONS" in detail and "TEST: +25.00%" in detail
+                await settle(pilot, lambda: "PROPOSED ALLOCATIONS" in detail())
+                assert "PROPOSED ALLOCATIONS" in detail() and "TEST: +25.00%" in detail()
             if what == "neither":
                 assert "valuation only" in head
                 assert ids == [None, "book"]
                 menu.highlighted = menu.get_option_index("book")
-                await pilot.pause()
-                assert "flat — no positions" in render(screen.query_one("#detail-pane", Static).content)
+                await settle(pilot, lambda: "no positions" in detail())
+                assert "flat — no positions" in detail()
     asyncio.run(scenario())
 
 

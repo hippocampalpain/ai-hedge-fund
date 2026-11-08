@@ -66,6 +66,7 @@ from hedge_fund.tui.shared import (
     strategy_kind,
     UNIVERSE_PRESETS,
 )
+from hedge_fund.money import money
 
 CUSTOM = "custom"  # sentinel value in the strategy list for "build your own"
 
@@ -503,7 +504,7 @@ class BuilderScreen(Screen):
         staff = ", ".join(s.title for s in self._state["strategies"])
         identity = Text.assemble(
             (spec.name, f"bold {BRIGHT}"),
-            (f"  ·  {staff}  ·  ${spec.capital:,.0f}  ·  {cadence_identity(spec)}", MUTED),
+            (f"  ·  {staff}  ·  {money(spec.capital)}  ·  {cadence_identity(spec)}", MUTED),
         )
         if replaced:
             self.notify(f"Replaced the previous {spec.name}.", severity="warning")
@@ -567,7 +568,7 @@ class BuilderScreen(Screen):
         chosen = {
             0: self._state.get("name"),
             1: self._short_strategies(),
-            2: (f"${self._state['capital']:,.0f}"
+            2: (f"{money(self._state['capital'])}"
                 if "capital" in self._state else None),
             3: self._short_cadence(),
             4: (short_tickers(self._state["universe"], 3)

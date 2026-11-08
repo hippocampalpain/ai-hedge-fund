@@ -13,6 +13,17 @@ from hedge_fund.tui.app import HedgeFundApp
 from hedge_fund.tui.fixtures import render
 
 
+def _owner_only(path) -> bool:
+    """POSIX: mode 0600. Windows has no group/other bits — chmod only sets the
+    read-only flag and st_mode always reads 0o666 — and the .env lives under
+    the user's profile, which Windows ACLs already keep private; there the
+    check is that the file stayed readable and writable by its owner."""
+    mode = stat.S_IMODE(path.stat().st_mode)
+    if os.name == "nt":
+        return bool(mode & stat.S_IRUSR and mode & stat.S_IWUSR)
+    return mode == 0o600
+
+
 @pytest.mark.parametrize("save", [True, False])
 def test_picker_and_masked_key_save_or_cancel(save, isolated_configuration):
     saved = isolated_configuration
@@ -42,7 +53,7 @@ def test_picker_and_masked_key_save_or_cancel(save, isolated_configuration):
             if save:
                 assert os.environ["TYPESAFE_API_KEY"] == entry.value
                 assert saved.read_text(encoding="utf-8") == original + f"TYPESAFE_API_KEY={entry.value}\n"
-                assert stat.S_IMODE(saved.stat().st_mode) == 0o600
+                assert _owner_only(saved)
             else:
                 assert "TYPESAFE_API_KEY" not in os.environ
                 assert saved.read_text(encoding="utf-8") == original
@@ -80,7 +91,7 @@ def test_data_credential_gate_takes_a_key_or_a_wallet(monkeypatch, isolated_conf
             resumed.assert_called_once()
             assert os.environ[env_var] == "fixture-secret-value"
             assert isolated_configuration.read_text(encoding="utf-8") == f"{env_var}=fixture-secret-value\n"
-            assert stat.S_IMODE(isolated_configuration.stat().st_mode) == 0o600
+            assert _owner_only(isolated_configuration)
             assert home.demand_run_keys(app, resumed) is True
 
     asyncio.run(scenario())

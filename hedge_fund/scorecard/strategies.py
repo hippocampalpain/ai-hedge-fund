@@ -67,6 +67,32 @@ def fund_pnl(records: list[SessionRecord]) -> float:
     return executions[-1].executed.equity_before - executions[0].executed.equity_before
 
 
+def pnl_window(records: list[SessionRecord]) -> dict:
+    """Where `fund_pnl` sits inside the whole run, so the parts add up:
+    start_nav + pnl_before_window + fund_pnl + pnl_after_window == end_nav.
+
+    `fund_pnl` (and every sleeve's P&L) runs from the first execution to the
+    last, at pre-fill equity. What happens after the last execution — its
+    own fills, then every close up to the last session — is
+    `pnl_after_window`; it is part of the run's return but no sleeve is
+    scored on it, because no later execution closes that period."""
+    first = records[0]
+    start = first.executed.equity_before if first.executed is not None else first.nav
+    end = records[-1].nav
+    executions = [r for r in records if r.executed is not None]
+    if not executions:
+        return {"start_nav": start, "end_nav": end, "pnl_after_window": end - start}
+    opened, closed = executions[0], executions[-1]
+    return {
+        "window_start": opened.session,
+        "window_end": closed.session,
+        "start_nav": start,
+        "end_nav": end,
+        "pnl_before_window": opened.executed.equity_before - start,
+        "pnl_after_window": end - closed.executed.equity_before,
+    }
+
+
 def trading_cost(records: list[SessionRecord]) -> float:
     """Spread and commission paid inside the `fund_pnl` window: every
     execution but the last, whose fills come after its pre-fill equity."""

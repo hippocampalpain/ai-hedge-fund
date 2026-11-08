@@ -77,6 +77,7 @@ from hedge_fund.tui.shared import (
     session_label,
 )
 from hedge_fund.tui.widgets import first_selectable, StatTiles
+from hedge_fund.money import money
 
 
 def _data_client():
@@ -671,7 +672,7 @@ class SessionsScreen(Screen):
         staff = ", ".join(s.title for s in spec.strategies)
         self.query_one("#pf-head", Static).update(Group(
             Text.assemble((snap.deployed.name, f"bold {BRIGHT}"), ("  ·  paper", MUTED)),
-            Text(f"{staff}  ·  {cadence_identity(spec)}  ·  ${spec.capital:,.0f}"
+            Text(f"{staff}  ·  {cadence_identity(spec)}  ·  {money(spec.capital)}"
                  f"  ·  {' '.join(snap.deployed.universe)}", style=MUTED),
         ))
         self.query_one("#pf-status", Static).update(snap.status())

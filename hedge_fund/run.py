@@ -87,6 +87,7 @@ from hedge_fund.tui.keys import apply_credentials
 from hedge_fund.tui.report import cost_line
 from hedge_fund.tui.scorecard_view import analyst_table, strategy_table
 from hedge_fund.tui.shared import BACKTEST_DAYS
+from hedge_fund.money import money
 
 
 def _data_client():
@@ -97,7 +98,21 @@ def _data_client():
     return FDClient()
 
 
+def _tolerant_console_streams() -> None:
+    """Windows: a console shows any character, but output redirected to a
+    file or pipe is encoded with the locale code page (cp949, cp1252), and
+    one character it lacks (→, ·, a box line) would crash the run with
+    UnicodeEncodeError. Replace such characters instead of failing."""
+    if os.name != "nt":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        encoding = (getattr(stream, "encoding", "") or "").lower().replace("-", "")
+        if encoding != "utf8" and hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
+
+
 def main() -> None:
+    _tolerant_console_streams()
     apply_credentials()
     ensure_mandates_dir()
     parser = _parser()
@@ -256,7 +271,8 @@ def _backtest(args, parser: argparse.ArgumentParser, console: Console) -> None:
         f"[bold]{spec.name}[/] {result.start} → {result.end}  ·  "
         f"{len(result.dates)} sessions  ·  {m.n_cycles} rebalances  ·  {m.n_orders} orders  ·  "
         f"{cost_line(m.trading_cost, m.traded_notional)}  ·  "
-        f"return {m.total_return_pct:+.1%} vs {spec.benchmark} {m.benchmark_return_pct:+.1%}  ·  "
+        f"return {m.total_return_pct:+.1%} ({money(result.nav[-1] - result.capital, sign=True)}) "
+        f"vs {spec.benchmark} {m.benchmark_return_pct:+.1%}  ·  "
         f"sharpe {m.sharpe_ratio:.2f}  ·  max drawdown {m.max_drawdown_pct:.1%}"
     )
     card = score(result.records)
@@ -330,7 +346,7 @@ def _paper(args, parser: argparse.ArgumentParser, console: Console) -> None:
         cadence = f"{spec.cadence_label}, {spec.window.label}" if spec.is_intraday else spec.cadence_label
         console.print(
             f"[bold]{args.name}[/] deployed at {directory}  ·  mandate {spec.name}  ·  "
-            f"{', '.join(universe)}  ·  ${spec.capital:,.0f}  ·  {cadence}"
+            f"{', '.join(universe)}  ·  {money(spec.capital)}  ·  {cadence}"
         )
         console.print(f"[dim]next: `aihf paper tick {args.name}` to run one session, `aihf paper run "
                       f"{args.name}` to leave it running, `aihf paper status {args.name}` any time[/]")
@@ -430,11 +446,11 @@ def _status_line(directory: Path) -> str:
     latest = ledger.latest()
     halted = ledger.halted()
     if latest is None:
-        state = f"not started  ·  ${deployed.spec.capital:,.0f}"
+        state = f"not started  ·  {money(deployed.spec.capital)}"
     else:
         ret = latest.nav / deployed.spec.capital - 1
         state = (f"{len(ledger.sessions())} sessions  ·  last {latest.session}  ·  "
-                 f"NAV ${latest.nav:,.2f} ({ret:+.2%})")
+                 f"NAV {money(latest.nav, 2)} ({ret:+.2%})")
     flag = f"  ·  HALTED: {halted}" if halted else ""
     running = "  ·  running" if is_running(directory) else ""
     return (f"{deployed.name:<18} {deployed.spec.name}  ·  {' '.join(deployed.universe)}  ·  "
@@ -442,9 +458,9 @@ def _status_line(directory: Path) -> str:
 
 
 def _tick_summary(name: str, record: SessionRecord) -> str:
-    parts = [f"[bold]{name}[/] · session {record.session} · NAV ${record.nav:,.2f}"]
+    parts = [f"[bold]{name}[/] · session {record.session} · NAV {money(record.nav, 2)}"]
     if record.executed is not None:
-        costs = f", costs ${record.executed.trading_cost:,.2f}" if record.executed.trading_cost else ""
+        costs = f", costs {money(record.executed.trading_cost, 2)}" if record.executed.trading_cost else ""
         parts.append(f"executed {len(record.executed.orders)} orders from {record.executed.as_of}{costs}")
     if record.decision is not None and record.decision.is_stopped_out:
         stop = next(c for c in record.decision.clamps if c.limit == "max_drawdown_pct")

@@ -24,6 +24,7 @@ from hedge_fund.pipeline.models import Allocated, AllocationRecord
 from hedge_fund.risk.exposures import Exposures
 from hedge_fund.tui.palette import BRIGHT, CYAN, GREEN, MUTED, RED, TEXT
 from hedge_fund.tui.shared import DISPLAY_NAMES, horizon_label, SHORT_NAMES
+from hedge_fund.money import money
 
 # One glyph and one colour per call, in one place: the live board knows only
 # the word the stream has decoded, the report has a whole Signal, and they must
@@ -323,7 +324,7 @@ def portfolio_detail(record: CycleRecord) -> Group:
     actual_net = sum(shares * record.marks[ticker] for ticker, shares in record.positions.items())
     details = [
         Text("PORTFOLIO", style=f"bold {BRIGHT}"),
-        Text(f"Target net ${target_net:+,.2f} · Actual net ${actual_net:+,.2f} · Difference ${actual_net - target_net:+,.2f}", style=MUTED),
+        Text(f"Target net {money(target_net, 2, sign=True)} · Actual net {money(actual_net, 2, sign=True)} · Difference {money(actual_net - target_net, 2, sign=True)}", style=MUTED),
     ]
     if any(s.blend.mode == "dollar_neutral" for s in record.spec.strategies):
         details.append(Text("Dollar-neutral rules apply to strategy targets. Whole-share holdings can differ; other strategies can add net exposure.", style=MUTED))
@@ -348,7 +349,7 @@ def portfolio_detail(record: CycleRecord) -> Group:
         tone = GREEN if value >= 0 else RED
         table.add_row(
             ticker, side, f"{shares:+d}",
-            Text(f"${value:+,.0f}", style=tone),
+            Text(f"{money(value, sign=True)}", style=tone),
             Text(f"{value / record.nav:+.1%}", style=tone),
         )
     return Group(*details, Text(""), table)
@@ -363,8 +364,8 @@ def book_summary(record: CycleRecord | SessionRecord) -> Text:
     gross = (long_val - short_val) / record.nav
     net = (long_val + short_val) / record.nav
     summary = Text()
-    summary.append(f"NAV ${record.nav:,.2f}", style=f"bold {BRIGHT}")
-    summary.append(f"   Cash ${record.cash:,.0f}", style=CYAN)
+    summary.append(f"NAV {money(record.nav, 2)}", style=f"bold {BRIGHT}")
+    summary.append(f"   Cash {money(record.cash)}", style=CYAN)
     summary.append(f"   Gross {gross:.0%}   Net {net:+.0%}", style=MUTED)
     return summary
 
@@ -411,7 +412,7 @@ def session_overview(record: SessionRecord) -> Group:
     ]
     if record.executed is not None:
         x = record.executed
-        costs = f" · costs ${x.trading_cost:,.2f}" if x.trading_cost else ""
+        costs = f" · costs {money(x.trading_cost, 2)}" if x.trading_cost else ""
         parts.append(Text.assemble(
             ("EXECUTED  ", f"bold {GREEN}"),
             (f"decision from {x.as_of} · {len(x.orders)} orders · {len(x.fills)} fills{costs}", MUTED)))
@@ -420,7 +421,7 @@ def session_overview(record: SessionRecord) -> Group:
             parts.append(Text.assemble(
                 (f"  {fill.side.upper():<4} ", f"bold {tone}"),
                 (f"{fill.quantity:,} {fill.ticker}", TEXT),
-                (f" @ ${fill.price:,.2f}", MUTED)))
+                (f" @ {money(fill.price, 2)}", MUTED)))
         if len(x.fills) > 8:
             parts.append(Text(f"  … {len(x.fills) - 8} more", style=MUTED))
         parts.append(Text(""))
@@ -458,7 +459,7 @@ def cost_line(trading_cost: float, traded_notional: float) -> str:
     if traded_notional == 0:
         return "no trades"
     bps = trading_cost / traded_notional * 10_000
-    return f"costs ${trading_cost:,.0f} · {bps:.1f} bps of ${traded_notional:,.0f} traded"
+    return f"costs {money(trading_cost)} · {bps:.1f} bps of {money(traded_notional)} traded"
 
 
 def tape_table(tape: list[tuple[str, Fill, int]]) -> Table:
@@ -484,8 +485,8 @@ def tape_table(tape: list[tuple[str, Fill, int]]) -> Table:
             Text(fill.ticker, style=f"bold {CYAN}"),
             side,
             f"{fill.quantity:,}",
-            f"@ ${fill.price:,.2f}",
-            Text(f"${fill.quantity * fill.price:,.0f}", style=TEXT),
+            f"@ {money(fill.price, 2)}",
+            Text(f"{money(fill.quantity * fill.price)}", style=TEXT),
             book,
         )
     if len(tape) > _TAPE_ROWS:
@@ -573,7 +574,7 @@ def _session_book(record: SessionRecord) -> Group:
                 else Text("SHORT", style=f"bold {RED}"))
         tone = GREEN if value >= 0 else RED
         table.add_row(ticker, side, f"{shares:+d}",
-                      Text(f"${value:+,.0f}", style=tone),
+                      Text(f"{money(value, sign=True)}", style=tone),
                       Text(f"{value / record.nav:+.1%}", style=tone))
     return Group(*head, Text(""), table)
 
@@ -641,8 +642,8 @@ def _orders_detail(record: CycleRecord) -> Group:
             Text(o.side.upper(), style=tone),
             Text(f"{o.quantity:,}", style=tone),
             o.ticker,
-            f"${o.price:,.2f}",
-            f"${fill.price:,.2f}",
+            f"{money(o.price, 2)}",
+            f"{money(fill.price, 2)}",
         ]
         if sized:
             row.append(f"{o.participation:.2%}" if o.adv is not None else "")
@@ -650,7 +651,7 @@ def _orders_detail(record: CycleRecord) -> Group:
     if record.slippage or record.commission:
         # Rounding first keeps a float's -0.00 off the screen.
         spread, impact, commission = (round(x, 2) + 0.0 for x in (record.spread_cost, record.impact, record.commission))
-        table.caption = f"spread ${spread:,.2f} · impact ${impact:,.2f} · commission ${commission:,.2f}"
+        table.caption = f"spread {money(spread, 2)} · impact {money(impact, 2)} · commission {money(commission, 2)}"
         table.caption_style = MUTED
         table.caption_justify = "left"
     return Group(Text("ORDERS", style=f"bold {BRIGHT}"), Text(""), table)

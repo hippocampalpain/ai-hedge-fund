@@ -14,6 +14,8 @@
 | 긴 대기(>60초) 429는 바로 기권, 하루 한도 소진 시 빠른 기권 | **Gemini를 쓸 때만** 있음 | 6번 재시도해도 실패할 호출이 바로 기권 (결과는 같고 시간만 줄어듦) | `LLM_MAX_RETRY_HINT_SECONDS=100000` |
 | `CompanyFacts.industry_code` 필드, 금융업 부채비율 설명 | 없음 | 아니오. 미국 API는 이 필드를 보내지 않아 `None`이고, 설명이 없으면 스냅샷 해시에서도 빠진다 | — |
 | 모의투자(paper) 거래일 기준 | 없음 | 아니오. `is_kr_mode()`일 때만 적용 | — |
+| 백테스트 요약에 금액 추가, P&L 표 아래 합계 줄 | **있음** (화면 표시만) | 아니오. 요약에 `return +1.2% ($+1,234)`처럼 금액이 붙고, STRATEGIES 표 아래에 `total P&L … = fund P&L … + after the last execution …` 줄이 생김. 미국 금액 형식(`$1,234.56`, 표의 `+2,040`)은 그대로 | — |
+| Windows 호환 (UTF-8 파일 입출력, `%-d` 날짜 형식, ledger `replace`) | **있음** (Windows에서만 달라짐) | 아니오. Windows에서 깨지던 동작이 정상화됨. Linux·macOS는 같음 | — |
 | 모의투자 runner의 Windows 대응 (실행 중 확인·중지) | **있음** (모든 모드, 운영체제별) | Windows: 이제 정상 동작(이전에는 Ctrl+C·강제 종료). Linux·macOS: 동작 같음, 중지할 때 stop 파일을 하나 더 씀 | — |
 
 ## 1. 백테스트 평가일 = 거래일만
@@ -75,7 +77,18 @@ GEMINI_TIMEOUT_SECONDS=60
   - `serve`는 끝날 때(예외 포함) 신호 핸들러, 감시 스레드, PID·stop 파일을 모두 원상복구한다.
 - **테스트 안전장치:** `hedge_fund/conftest.py`가 모든 테스트 뒤에 SIGINT·SIGTERM 핸들러가 원래대로인지, `aihf-` 스레드가 남지 않았는지 검사한다.
 
-## 7. 한국 모드 전용 (미국 모드 영향 없음)
+## 7. 백테스트 리포트의 P&L 표시
+
+- STRATEGIES 표와 `fund P&L`은 설계상 **첫 체결부터 마지막 체결 직전까지**(체결 전 자산 기준)만 센다. 그다음 체결이 있어야 그 구간을 전략별로 채점할 수 있기 때문이다.
+- 그래서 마지막 체결 뒤에 주가가 크게 움직이면 표의 P&L과 전체 수익률의 부호가 다를 수 있다.
+  - 예시: 005930, 2026-10-23 ~ 11-06. fund P&L은 +755,213원(10-26 → 11-03). 그 뒤 11-03 → 11-06에 219,500 → 188,700으로 떨어져 −3,480,400원. 합계 −2,725,187원 = 수익률 −2.7%.
+- 계산은 바꾸지 않았다. 표 아래에 다음을 표시하도록 바꿨다.
+  - 구간 날짜
+  - `total P&L = fund P&L + (첫 체결 전) + after the last execution`
+  - 시작·끝 NAV
+- `Scorecard`에 `window_start`, `window_end`, `start_nav`, `end_nav`, `pnl_before_window`, `pnl_after_window`, `total_pnl`이 생겼다(항상 `start_nav + … = end_nav`).
+
+## 8. 한국 모드 전용 (미국 모드 영향 없음)
 
 | 변경 | 적용 조건 |
 |---|---|
@@ -84,3 +97,4 @@ GEMINI_TIMEOUT_SECONDS=60
 | FDR(네이버) 종가로 대체될 때 경고 | 한국 시세 서비스 안에서만 |
 | 모의투자 새로 고침 기준일 = KRX 직전 거래일 | `is_kr_mode()` |
 | 실행 전 "예상 LLM 호출 수" 출력 | `aihf backtest`에서 `is_kr_mode()`일 때만 |
+| 금액을 원화로 표시 (`15,287원`, `9,727만원`) | `hedge_fund/money.py`, `is_kr_mode()` |

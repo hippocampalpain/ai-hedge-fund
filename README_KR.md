@@ -210,6 +210,7 @@ poetry run aihf backtest "$HOME\.hedge-fund\mandates\example_kr.yaml" --universe
 - `--end`를 빼면 최근 완료된 거래일, `--start`를 빼면 그보다 260일 전입니다.
 - 실행 전에 **"예상 LLM 호출 수"**(에이전트 수 × 종목 수 × 평가일 수)가 나옵니다. Gemini 무료 한도를 넘지 않는지 먼저 보세요. 기간을 짧게, 종목을 적게 잡을수록 호출이 적습니다.
 - 결과는 수익률 vs KOSPI, 주문 수, 샤프지수, 최대낙폭, 애널리스트별 성적표입니다. 전체 JSON은 `~\.hedge-fund\research\`에 저장됩니다.
+- STRATEGIES 표의 P&L은 **첫 체결부터 마지막 체결 직전까지**만 셉니다. 마지막 체결 이후 기말까지의 평가손익은 표 아래 `after the last execution`에 따로 나오고, `total P&L`(= 수익률)이 둘의 합입니다.
 - 수수료율·거래세는 mandate의 `costs:`에서 바꿉니다(`commission_rate`, `sell_tax_rate`). 기본값은 0입니다.
 
 에이전트를 줄이려면 mandate 파일을 복사해서 `models:`에서 줄을 지우면 됩니다.
@@ -266,6 +267,7 @@ poetry run aihf
 | 증상 | 해결 |
 |---|---|
 | 한글이 깨져 보임 | PowerShell에서 `chcp 65001`을 실행한 뒤 다시 실행하세요. |
+| `'cp949' codec can't decode byte …` | 예전 버전의 문제입니다. `git pull` 하면 고쳐져 있습니다(모든 파일을 UTF-8로 읽고 씀). `PYTHONUTF8=1`은 필요 없습니다. |
 | `KRX 로그인에 실패했습니다` | `KRX_ID`·`KRX_PW`를 확인하세요. 실패해도 FinanceDataReader로 대체되지만 종가가 KRX와 다를 수 있습니다(위 "NXT 종가 차이"). |
 | `DART ... status 010/011/020` | DART 키가 틀렸거나(010·011) 하루 호출 한도(020)를 넘었습니다. |
 | `하루 무료 한도(…)를 다 썼습니다` | Gemini 하루 한도 소진입니다. 로그에 적힌 시간이 지난 뒤 다시 하거나, `.env`의 `HEDGE_FUND_LLM_MODEL`을 다른 무료 모델로 바꾸세요(`scripts/kr_check.py`의 3번에 목록이 나옵니다). |

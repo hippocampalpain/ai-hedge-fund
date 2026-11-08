@@ -138,7 +138,9 @@ class Ledger:
         keep = self.records_dir / SUPERSEDED_SUBDIR
         keep.mkdir(exist_ok=True)
         safe = latest.session.replace(":", "")
-        self.path(latest.session).rename(keep / f"{safe}.{latest.hash[:12]}.json")
+        # replace, not rename: redoing an unchanged session supersedes a record
+        # with the same hash, and Windows refuses to rename onto an existing file.
+        self.path(latest.session).replace(keep / f"{safe}.{latest.hash[:12]}.json")
         checkpoint = self.checkpoint_path(session_date(latest.session))
         if checkpoint.exists():
             checkpoint.unlink()

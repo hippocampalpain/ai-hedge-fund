@@ -101,3 +101,15 @@ def make_pending(as_of="2025-01-17", weights=None):
 
 def make_quote(ticker, price, time="2025-01-21T15:05:00Z"):
     return PriceSnapshot(ticker=ticker, price=price, time=time)
+
+
+async def settle(pilot, ready, tries: int = 100, step: float = 0.02) -> None:
+    """Let the app process messages until *ready()* is true (or ~2s pass).
+
+    One `pilot.pause()` is enough on a fast Linux box, not on Windows: a
+    screen's mount-time highlight can arrive after the test's own. Waiting
+    for the state itself is right everywhere; the caller still asserts."""
+    for _ in range(tries):
+        if ready():
+            return
+        await pilot.pause(step)

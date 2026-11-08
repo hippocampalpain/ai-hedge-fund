@@ -837,6 +837,13 @@ def test_forced_views_trade_at_the_krx_close_and_score_against_kospi(tmp_path):
     assert m.excess_return_pct == pytest.approx(m.total_return_pct - m.benchmark_return_pct, abs=1e-6)
     assert m.trading_cost == pytest.approx(fill.quantity * (52_000 * 0.00015 + 56_000 * (0.00015 + 0.002)))
 
+    # The scorecard's pieces add up to the whole run: start + before + fund P&L + after == end NAV.
+    from hedge_fund.scorecard import score
+    card = score(result.records)
+    assert (card.window_start, card.window_end) == ("2025-06-03", "2025-06-10")
+    assert card.total_pnl == pytest.approx(result.nav[-1] - 100_000_000)
+    assert card.start_nav + card.pnl_before_window + card.fund_pnl + card.pnl_after_window == pytest.approx(result.nav[-1])
+
 
 
 # ---------------------------------------------------------------------------
@@ -869,3 +876,44 @@ def test_a_financial_companys_prompt_explains_its_debt_to_equity(tmp_path, blind
     assert note in line                                      # right beside the number
     assert note not in maker.render(blind=blind)
     assert bank.content_hash != maker.content_hash           # a different prompt, a different cache key
+
+
+
+# ---------------------------------------------------------------------------
+# 원화 표시와 P&L 설명 (리포트)
+# ---------------------------------------------------------------------------
+
+def test_amounts_are_shown_in_won_in_korean_mode():
+    from hedge_fund.money import money, money_short, pnl
+    from hedge_fund.tui.report import cost_line
+    assert money(15_286.66) == "15,287원" and money(-3_480_400, sign=True) == "-3,480,400원"
+    assert pnl(755_213.3) == "+755,213원"
+    assert money_short(97_274_813) == "9,727만원" and money_short(123_000_000) == "1.2억원"
+    assert cost_line(15_286.66, 25_823_366.42) == "costs 15,287원 · 5.9 bps of 25,823,366원 traded"
+
+
+def test_us_amounts_are_unchanged(monkeypatch):
+    monkeypatch.delenv("DATA_PROVIDER", raising=False)
+    from hedge_fund.money import money, money_short, pnl
+    assert money(1234.5, 2) == "$1,234.50" and money(75, sign=True) == "$+75" and pnl(2040) == "+2,040"
+    assert money_short(25_000) == "$25k"
+
+
+def test_a_fall_after_the_last_execution_is_shown_next_to_the_window_pnl():
+    """The 005930 run (2026-10-23 ~ 11-06): fund P&L +755,213 between the
+    executions, then −3,480,400 after the last one = −2,725,187 (−2.7%)."""
+    from hedge_fund.scorecard.models import Scorecard, StrategyScore
+    from hedge_fund.tui.fixtures import render
+    from hedge_fund.tui.scorecard_view import strategy_table
+    card = Scorecard(
+        fund="kr", first_session="2026-10-23", last_session="2026-11-06", analysts=[],
+        strategies=[StrategyScore(name="deep-value", n_periods=2, pnl=771_884, return_pct=0.0077, win_rate=0.5,
+                                  t_stat=0.6, share_of_pnl=1.02, max_drawdown_pct=0.003)],
+        fund_pnl=755_213, trading_cost=15_287, window_start="2026-10-26", window_end="2026-11-03",
+        start_nav=100_000_000, end_nav=97_274_813, pnl_after_window=-3_480_400,
+    )
+    assert card.total_pnl == pytest.approx(-2_725_187)
+    text = " ".join(render(strategy_table(card)).split())
+    assert "fund P&L +755,213원 (2026-10-26 → 2026-11-03, first to last execution, pre-fill)" in text
+    assert "total P&L -2,725,187원 = fund P&L +755,213원 + after the last execution -3,480,400원" in text
+    assert "NAV 100,000,000원 → 97,274,813원" in text and "$" not in text

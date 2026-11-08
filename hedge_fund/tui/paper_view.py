@@ -33,6 +33,7 @@ from hedge_fund.pipeline import (
 from hedge_fund.tui.palette import BRIGHT, CYAN, GREEN, MUTED, RED, TEXT
 from hedge_fund.tui.report import session_row, weights_line
 from hedge_fund.tui.shared import cadence_identity, render_area_chart, session_label
+from hedge_fund.money import money
 
 _PERIOD_WORD = {"daily": "day", "weekly": "week", "monthly": "month"}
 
@@ -249,9 +250,10 @@ def live_rows(
     today = today or datetime.now(NEW_YORK).date().isoformat()
     stale = newest.date().isoformat() < today
     tone = MUTED if stale else GREEN if change >= 0 else RED
-    when = newest.strftime("%b %-d %H:%M") if stale else newest.strftime("%H:%M")
+    # "%-d" (no leading zero) is glibc-only and raises on Windows; build the day by hand.
+    when = f"{newest:%b} {newest.day} {newest:%H:%M}" if stale else f"{newest:%H:%M}"
     return [("Live", Text.assemble(
-        (f"${value:,.0f}", MUTED if stale else TEXT),
+        (f"{money(value)}", MUTED if stale else TEXT),
         (f"   {change:+.2%}", tone),
         (f"   as of {when} ET", MUTED)))]
 
@@ -269,7 +271,7 @@ def paper_detail(
     staff = ", ".join(s.title for s in spec.strategies)
     parts: list = [
         Text.assemble((snap.deployed.name, f"bold {BRIGHT}"), "   ", snap.badge()),
-        Text(f"{staff} · {cadence_identity(spec)} · ${spec.capital:,.0f} · {' '.join(snap.deployed.universe)}",
+        Text(f"{staff} · {cadence_identity(spec)} · {money(spec.capital)} · {' '.join(snap.deployed.universe)}",
              style=MUTED),
         Text(""),
     ]
@@ -286,7 +288,7 @@ def paper_detail(
         n = len(snap.records)
         ret, bench_ret = m.total_return_pct, m.benchmark_return_pct
         parts += [Text(""), _section("PERFORMANCE"), _facts([
-            ("Value", f"${snap.nav:,.0f}"),
+            ("Value", f"{money(snap.nav)}"),
             ("Return", Text.assemble((f"{ret:+.1%}", GREEN if ret >= 0 else RED),
                                      (f"   {spec.benchmark} {bench_ret:+.1%}", MUTED))),
             ("Since", Text(f"{snap.records[0].session} · {n} {'session' if n == 1 else 'sessions'}"

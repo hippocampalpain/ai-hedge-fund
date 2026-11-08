@@ -44,9 +44,9 @@
 | report_period, filing_date | DART | 분기말 날짜 / 그 분기를 완성시킨 보고서의 접수일(`rcept_no` 앞 8자리 = `rcept_dt`) |
 | currency | — | `"KRW"` |
 | market_cap | 가격 | 공시일 기준 종가 × 상장주식수 (pykrx 시가총액) |
-| price_to_earnings_ratio | 계산 | 시가총액 / TTM 지배주주순이익 (pykrx PER과 비교용 출력) |
-| price_to_book_ratio | 계산 | 시가총액 / 지배주주지분 (pykrx PBR과 비교) |
-| price_to_sales_ratio | 계산 | 시가총액 / TTM 매출 |
+| price_to_earnings_ratio | 계산 | 공시일 종가 / TTM EPS (pykrx PER과 비교용 출력) — 최종 계산식은 02_formulas.md |
+| price_to_book_ratio | 계산 | 공시일 종가 / BPS (pykrx PBR과 비교) |
+| price_to_sales_ratio | 계산 | 공시일 종가 / 주당 TTM 매출 |
 | enterprise_value | 계산 | 시가총액 + 차입금 − 현금성자산 (차입금 계정이 없으면 None) |
 | EV/EBITDA, EV/Revenue | 계산 | EBITDA = 영업이익 + 감가상각비(현금흐름표) |
 | free_cash_flow_yield, peg_ratio | 계산 | FCF/시가총액, PER/(EPS성장률×100) |

@@ -750,3 +750,7 @@ def test_falling_back_to_naver_closes_is_a_warning(tmp_path, caplog):
     with caplog.at_level(logging.WARNING):
         assert service.bars("123450", "2025-06-02", "2025-06-06")
     assert "KRX 공식 종가와 다를 수 있습니다" in caplog.text
+
+
+def test_korean_client_names_its_metrics_cache_version():
+    assert KRDataClient.cache_version == "kr-2"

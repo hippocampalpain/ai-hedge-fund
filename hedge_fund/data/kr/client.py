@@ -49,6 +49,12 @@ def _log_once(kind: str, ticker: str, message: str, *args, level=logging.INFO) -
 
 
 class KRDataClient:
+    # Disk-cache generation for CachedDataClient. Bump whenever a derived
+    # number changes meaning, so answers cached under old formulas are not
+    # replayed. 2: newest row priced on the evaluation date; EPS on weighted
+    # average issued shares.
+    cache_version = "kr-2"
+
     def __init__(
         self,
         dart: DartClient | None = None,

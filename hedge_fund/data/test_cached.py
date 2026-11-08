@@ -186,3 +186,24 @@ def test_incomplete_daily_price_cache_is_refreshed_after_date_ends(tmp_path, mon
     assert inner.calls == 3
     fd.get_prices("AAPL", "2024-01-01", "2024-01-01")
     assert inner.calls == 3
+
+
+def test_a_client_cache_version_retires_old_answers(tmp_path):
+    """A client that derives its own numbers (the Korean client) names a cache
+    version; answers cached under another version are not replayed."""
+    inner = CountingClient()
+    CachedDataClient(inner, cache_dir=tmp_path).get_market_cap("005930", "2026-10-23")
+    inner.cache_version = "kr-2"
+    fd = CachedDataClient(inner, cache_dir=tmp_path)
+    fd.get_market_cap("005930", "2026-10-23")
+    fd.get_market_cap("005930", "2026-10-23")
+    assert inner.calls == 2  # one miss for the new version, then a hit
+
+
+def test_clients_without_a_cache_version_keep_their_keys(tmp_path):
+    fd = CachedDataClient(CountingClient(), cache_dir=tmp_path)
+    import hashlib
+    import json
+    params = {"ticker": "AAPL", "end_date": "2024-12-31"}
+    expected = hashlib.sha256(f"get_market_cap|{json.dumps(params, sort_keys=True)}".encode()).hexdigest()[:24]
+    assert fd._key("get_market_cap", params) == expected

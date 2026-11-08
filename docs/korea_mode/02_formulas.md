@@ -153,3 +153,4 @@ pykrx의 수정주가 경로(`http://fchart.stock.naver.com`)는 평문 HTTP라�
 - **예상 LLM 호출 수** = LLM 에이전트 수 × 종목 수 × 평가일 수. 평가일마다 최신 행이 그날 종가로 다시 계산되므로 날짜마다 새 프롬프트다. 이미 성공한 호출은 캐시에서 읽으므로 같은 조건으로 다시 돌리면 그만큼 빠진다. 재시도는 세지 않는다.
 - **Gemini 재시도:** 429/RESOURCE_EXHAUSTED는 최대 6회(`LLM_MAX_RETRIES`). 500/502/503/504, `Deadline expired`(DEADLINE_EXCEEDED), UNAVAILABLE, 타임아웃·연결 끊김은 최대 3회(`LLM_TRANSIENT_RETRIES`). 둘 다 5초, 10초, 20초 … 지수 백오프에 1초 이내 지터가 붙는다(`LLM_RETRY_BASE_SECONDS`, `LLM_RETRY_MAX_SECONDS`).
 - **Gemini 요청 제한 시간:** 기본 180초(`GEMINI_TIMEOUT_SECONDS`). 이전 60초에서는 `gemini-flash-latest`가 긴 프롬프트에 504 `Deadline expired`를 냈다.
+- **데이터 캐시 버전:** 백테스트의 디스크 캐시(`~/.hedge-fund/cache/data/`)는 `(종목, 기준일)`로 재무지표를 저장한다. 계산식을 바꾸면 `KRDataClient.cache_version`을 올려서 옛 계산값이 다시 쓰이지 않게 한다(현재 `kr-2`). 미국 모드 캐시 키는 그대로다.

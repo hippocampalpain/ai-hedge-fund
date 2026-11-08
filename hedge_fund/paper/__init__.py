@@ -28,6 +28,7 @@ from hedge_fund.paper.ledger import Ledger, LedgerError
 from hedge_fund.paper.runner import (
     is_running,
     PID_FILE,
+    STOP_FILE,
     run,
     serve,
     spawn_runner,
@@ -49,6 +50,7 @@ __all__ = [
     "LedgerError",
     "NothingDue",
     "PID_FILE",
+    "STOP_FILE",
     "assessment_dates",
     "deploy",
     "following_session",

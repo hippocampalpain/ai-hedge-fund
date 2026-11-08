@@ -29,3 +29,22 @@ def _no_breakpoints_download(monkeypatch):
         raise RuntimeError("tests must inject MEBreakpoints; no network download")
     monkeypatch.setattr(breakpoints, "load_breakpoints", refuse)
     monkeypatch.setattr(breakpoints, "_shared", None)
+
+
+@pytest.fixture(autouse=True)
+def _no_leaked_signal_handlers_or_runner_threads():
+    """Every test leaves the process as it found it: the SIGINT/SIGTERM
+    handlers it may have replaced are back, and no runner thread (named
+    ``aihf-…``) is still alive. A leak here is what turns into a stray
+    KeyboardInterrupt in a later test, or after the last one."""
+    import signal
+    import threading
+
+    before = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+    yield
+    after = {s: signal.getsignal(s) for s in before}
+    for sig, handler in before.items():
+        signal.signal(sig, handler)  # restore first, so one leak cannot cascade
+    leaked = [t.name for t in threading.enumerate() if t.name.startswith("aihf-") and t.is_alive()]
+    assert after == before, f"signal handlers not restored: {after} != {before}"
+    assert not leaked, f"background threads left running: {leaked}"

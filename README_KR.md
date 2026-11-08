@@ -270,5 +270,6 @@ poetry run aihf
 | `DART ... status 010/011/020` | DART 키가 틀렸거나(010·011) 하루 호출 한도(020)를 넘었습니다. |
 | `하루 무료 한도(…)를 다 썼습니다` | Gemini 하루 한도 소진입니다. 로그에 적힌 시간이 지난 뒤 다시 하거나, `.env`의 `HEDGE_FUND_LLM_MODEL`을 다른 무료 모델로 바꾸세요(`scripts/kr_check.py`의 3번에 목록이 나옵니다). |
 | `504 Deadline expired` | Gemini 서버 지연입니다. 자동으로 최대 3번 재시도합니다. 계속되면 `.env`에 `GEMINI_TIMEOUT_SECONDS=300`을 넣으세요. |
+| `poetry run pytest`가 끝날 무렵 `KeyboardInterrupt` | 모의투자 runner의 Windows 문제였고 고쳤습니다(`git pull` 후 다시 실행). `aihf paper stop <이름>`은 진행 중인 세션을 마친 뒤 1초 안에 멈춥니다. |
 | 첫 실행이 너무 오래 걸림 | 종목당 DART 첫 조회는 몇 분 걸립니다. 캐시는 `C:\Users\<이름>\.hedge-fund\cache\kr\`에 저장되어 다음부터 빠릅니다. |
 | 계산식을 바꾼 뒤 예전 숫자가 나옴 | 데이터 캐시 `C:\Users\<이름>\.hedge-fund\cache\data\`를 지우면 다시 계산합니다. |

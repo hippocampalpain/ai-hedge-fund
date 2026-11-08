@@ -14,6 +14,7 @@
 | 긴 대기(>60초) 429는 바로 기권, 하루 한도 소진 시 빠른 기권 | **Gemini를 쓸 때만** 있음 | 6번 재시도해도 실패할 호출이 바로 기권 (결과는 같고 시간만 줄어듦) | `LLM_MAX_RETRY_HINT_SECONDS=100000` |
 | `CompanyFacts.industry_code` 필드, 금융업 부채비율 설명 | 없음 | 아니오. 미국 API는 이 필드를 보내지 않아 `None`이고, 설명이 없으면 스냅샷 해시에서도 빠진다 | — |
 | 모의투자(paper) 거래일 기준 | 없음 | 아니오. `is_kr_mode()`일 때만 적용 | — |
+| 모의투자 runner의 Windows 대응 (실행 중 확인·중지) | **있음** (모든 모드, 운영체제별) | Windows: 이제 정상 동작(이전에는 Ctrl+C·강제 종료). Linux·macOS: 동작 같음, 중지할 때 stop 파일을 하나 더 씀 | — |
 
 ## 1. 백테스트 평가일 = 거래일만
 
@@ -59,7 +60,22 @@ GEMINI_TIMEOUT_SECONDS=60
 - 설명은 `location == "KR"`이고 업종코드가 64·65·66으로 시작할 때만 붙는다. 미국 은행(예: JPM)에는 붙지 않는다.
 - `FundamentalsSnapshot.leverage_note`가 `None`이면 `content_hash` 계산에서 빠지므로, 미국 스냅샷 해시는 이 변경 전과 같다(`test_us_snapshots_have_no_leverage_note_and_hash_as_before`).
 
-## 6. 한국 모드 전용 (미국 모드 영향 없음)
+## 6. 모의투자 runner의 Windows 대응
+
+`hedge_fund/paper/runner.py`는 미국·한국 모드가 함께 쓴다.
+
+- **이전 문제 (Windows):** `is_running`이 `os.kill(pid, 0)`으로 runner가 살아 있는지 확인했다. 그런데 Windows에서 `0`은 `signal.CTRL_C_EVENT`라서, 확인하는 대신 콘솔에 **Ctrl+C를 보냈다.**
+  - `aihf paper list`·`status`·`stop`, TUI 모의투자 화면(주기적으로 확인)에서 일어났다.
+  - `pytest`에서는 `test_paper_minute_fund_ticks_and_runs_like_a_daily_one`이 PID 파일에 자기 PID를 쓴 뒤 `paper list`를 불러, 테스트가 끝난 직후 `KeyboardInterrupt`가 났다.
+  - `stop_runner`의 `os.kill(pid, SIGTERM)`은 Windows에서 `TerminateProcess`(강제 종료)라서, 세션 도중에 runner가 죽고 PID 파일이 남았다.
+- **지금:**
+  - Windows에서는 `OpenProcess`·`GetExitCodeProcess`로 **조회만** 한다.
+  - 중지는 모든 OS에서 `runner.stop` 파일로 요청하고, runner가 1초 안에 보고 진행 중인 세션을 마친 뒤 멈춘다. Linux·macOS에서는 이전처럼 SIGTERM도 보낸다.
+  - TUI에서 띄우는 runner는 Windows에서 별도 프로세스 그룹·콘솔 없음(`CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS`)으로 실행해, 앱 콘솔의 Ctrl+C가 닿지 않는다.
+  - `serve`는 끝날 때(예외 포함) 신호 핸들러, 감시 스레드, PID·stop 파일을 모두 원상복구한다.
+- **테스트 안전장치:** `hedge_fund/conftest.py`가 모든 테스트 뒤에 SIGINT·SIGTERM 핸들러가 원래대로인지, `aihf-` 스레드가 남지 않았는지 검사한다.
+
+## 7. 한국 모드 전용 (미국 모드 영향 없음)
 
 | 변경 | 적용 조건 |
 |---|---|

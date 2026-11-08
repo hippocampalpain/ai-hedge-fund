@@ -12,18 +12,18 @@ from hedge_fund.brokers.paper import PaperBroker
 def test_book_round_trips_through_the_file(tmp_path):
     path = tmp_path / "broker.json"
     broker = PaperBroker.create(path, cash=10_000)
-    assert json.loads(path.read_text()) == {"cash": 10_000, "shares": {}}
+    assert json.loads(path.read_text(encoding="utf-8")) == {"cash": 10_000, "shares": {}}
 
     broker.place_order(Order(ticker="B", side="sell", quantity=5, price=100))
     broker.place_order(Order(ticker="A", side="buy", quantity=10, price=100))
-    assert json.loads(path.read_text()) == {"cash": 9_500, "shares": {"A": 10, "B": -5}}
+    assert json.loads(path.read_text(encoding="utf-8")) == {"cash": 9_500, "shares": {"A": 10, "B": -5}}
 
     reopened = PaperBroker(path)
     assert reopened.cash() == 9_500
     assert {t: p.shares for t, p in reopened.positions().items()} == {"A": 10, "B": -5}
 
     reopened.place_order(Order(ticker="A", side="sell", quantity=10, price=110))
-    assert json.loads(path.read_text()) == {"cash": 10_600, "shares": {"B": -5}}
+    assert json.loads(path.read_text(encoding="utf-8")) == {"cash": 10_600, "shares": {"B": -5}}
     assert "A" not in PaperBroker(path).positions()
 
 
@@ -39,10 +39,10 @@ def test_create_refuses_to_overwrite_and_open_requires_a_book(tmp_path):
 def test_rejected_order_leaves_the_file_untouched(tmp_path):
     path = tmp_path / "broker.json"
     broker = PaperBroker.create(path, cash=1_000)
-    before = path.read_text()
+    before = path.read_text(encoding="utf-8")
     with pytest.raises(ValueError):
         broker.place_order(Order(ticker="A", side="buy", quantity=1, price=float("nan")))
-    assert path.read_text() == before
+    assert path.read_text(encoding="utf-8") == before
 
 
 def test_costs_are_charged_whichever_way_the_book_is_opened(tmp_path):
@@ -50,7 +50,7 @@ def test_costs_are_charged_whichever_way_the_book_is_opened(tmp_path):
     costs = TradingCosts(spread_bps=5, commission_per_share=0.005)
     created = PaperBroker.create(path, cash=10_000, costs=costs)
     created.place_order(Order(ticker="A", side="buy", quantity=100, price=100))
-    assert json.loads(path.read_text())["cash"] == pytest.approx(10_000 - 100 * 100.05 - 0.50)
+    assert json.loads(path.read_text(encoding="utf-8"))["cash"] == pytest.approx(10_000 - 100 * 100.05 - 0.50)
 
     reopened = PaperBroker(path, costs)
     reopened.place_order(Order(ticker="A", side="sell", quantity=100, price=100))

@@ -74,9 +74,9 @@ def test_deploy_lays_out_the_fund_directory(tmp_path, SPEC):
     deployed = load_deployed(directory)
     assert deployed.name == "alpha" and deployed.spec == SPEC
     assert deployed.universe == ["AAPL", "MSFT"] and deployed.broker == "paper"
-    assert yaml.safe_load((directory / "fund.yaml").read_text())["spec"]["name"] == "paper-fund"
-    assert json.loads((directory / "broker.json").read_text()) == {"cash": 100_000, "shares": {}}
-    assert json.loads((directory / "control.json").read_text()) == {"halted": False}
+    assert yaml.safe_load((directory / "fund.yaml").read_text(encoding="utf-8"))["spec"]["name"] == "paper-fund"
+    assert json.loads((directory / "broker.json").read_text(encoding="utf-8")) == {"cash": 100_000, "shares": {}}
+    assert json.loads((directory / "control.json").read_text(encoding="utf-8")) == {"halted": False}
     assert (directory / "ledger").is_dir() and Ledger(directory).sessions() == []
     assert list_deployed(tmp_path) == [directory]
     assert list_deployed(tmp_path / "nowhere") == []
@@ -94,10 +94,10 @@ def test_deploy_rejects_unsafe_names(tmp_path, bad, SPEC):
 
 
 def test_load_deployed_reports_the_path_on_bad_files(tmp_path, SPEC):
-    (tmp_path / "fund.yaml").write_text("[oops")
+    (tmp_path / "fund.yaml").write_text("[oops", encoding="utf-8")
     with pytest.raises(ValueError, match="fund.yaml"):
         load_deployed(tmp_path)
-    (tmp_path / "fund.yaml").write_text("name: x\n")
+    (tmp_path / "fund.yaml").write_text("name: x\n", encoding="utf-8")
     with pytest.raises(ValueError, match="spec"):
         load_deployed(tmp_path)
 
@@ -148,7 +148,7 @@ def test_ticks_advance_one_session_each_and_match_the_backtest(tmp_path, clock, 
     assert tuesday.session == "2024-06-04"
     assert tuesday.executed.execution_as_of == "2024-06-04"
     assert tuesday.positions == {"AAPL": 500}
-    assert json.loads((directory / "broker.json").read_text()) == {"cash": 0, "shares": {"AAPL": 500}}
+    assert json.loads((directory / "broker.json").read_text(encoding="utf-8")) == {"cash": 0, "shares": {"AAPL": 500}}
     wednesday = _tick(directory)
     assert wednesday.session == "2024-06-05" and wednesday.executed is None
 
@@ -199,17 +199,17 @@ def test_redo_runs_the_latest_session_again_and_replaces_its_record(tmp_path, cl
     clock("2024-06-05")
     tuesday = _tick(directory)               # 06-04: bought 500 AAPL, decided again
     assert tuesday.positions == {"AAPL": 500} and tuesday.decision.final_weights == {"AAPL": 1.0}
-    book_before = json.loads((directory / "broker.json").read_text())
+    book_before = json.loads((directory / "broker.json").read_text(encoding="utf-8"))
 
     # Same analysts, same close: the redo reproduces the session exactly. The
     # point is the book — without the restore, the broker would still hold
     # Tuesday's 500 shares going in and the reconciliation would halt the fund.
     same = redo(directory, FakeDataClient(SERIES), build_fund=build_fund)
     assert same == tuesday
-    assert json.loads((directory / "broker.json").read_text()) == book_before
+    assert json.loads((directory / "broker.json").read_text(encoding="utf-8")) == book_before
     kept = sorted((directory / "ledger" / "superseded").glob("*.json"))
     assert [p.name for p in kept] == [f"2024-06-04.{tuesday.hash[:12]}.json"]
-    assert json.loads(kept[0].read_text())["hash"] == tuesday.hash
+    assert json.loads(kept[0].read_text(encoding="utf-8"))["hash"] == tuesday.hash
 
     # The analysts changed their minds by the evening: the 06-03 decision is
     # still what gets executed, but the new decision is different.
@@ -264,9 +264,9 @@ def test_broker_drift_between_ticks_is_caught_and_halts(tmp_path, clock, SPEC):
     clock("2024-06-05")
     directory = deploy("alpha", SPEC, ["AAPL"], root=tmp_path)
     _tick(directory)
-    book = json.loads((directory / "broker.json").read_text())
+    book = json.loads((directory / "broker.json").read_text(encoding="utf-8"))
     book["cash"] -= 5
-    (directory / "broker.json").write_text(json.dumps(book))
+    (directory / "broker.json").write_text(json.dumps(book), encoding="utf-8")
     clock("2024-06-06")
     from hedge_fund.pipeline.session import BookMismatch
     with pytest.raises(BookMismatch, match="cash"):

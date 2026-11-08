@@ -16,8 +16,8 @@ from hedge_fund.tui.fixtures import render
 @pytest.mark.parametrize("save", [True, False])
 def test_picker_and_masked_key_save_or_cancel(save, isolated_configuration):
     saved = isolated_configuration
-    saved.write_text("# keep this comment\nUNRELATED_KEY=untouched\n")
-    original = saved.read_text()
+    saved.write_text("# keep this comment\nUNRELATED_KEY=untouched\n", encoding="utf-8")
+    original = saved.read_text(encoding="utf-8")
 
     async def scenario():
         app = HedgeFundApp()
@@ -41,11 +41,11 @@ def test_picker_and_masked_key_save_or_cancel(save, isolated_configuration):
             assert isinstance(app.screen, home.HomeScreen)
             if save:
                 assert os.environ["TYPESAFE_API_KEY"] == entry.value
-                assert saved.read_text() == original + f"TYPESAFE_API_KEY={entry.value}\n"
+                assert saved.read_text(encoding="utf-8") == original + f"TYPESAFE_API_KEY={entry.value}\n"
                 assert stat.S_IMODE(saved.stat().st_mode) == 0o600
             else:
                 assert "TYPESAFE_API_KEY" not in os.environ
-                assert saved.read_text() == original
+                assert saved.read_text(encoding="utf-8") == original
 
     asyncio.run(scenario())
 
@@ -79,7 +79,7 @@ def test_data_credential_gate_takes_a_key_or_a_wallet(monkeypatch, isolated_conf
             await pilot.press("enter")
             resumed.assert_called_once()
             assert os.environ[env_var] == "fixture-secret-value"
-            assert isolated_configuration.read_text() == f"{env_var}=fixture-secret-value\n"
+            assert isolated_configuration.read_text(encoding="utf-8") == f"{env_var}=fixture-secret-value\n"
             assert stat.S_IMODE(isolated_configuration.stat().st_mode) == 0o600
             assert home.demand_run_keys(app, resumed) is True
 
@@ -119,9 +119,9 @@ def test_missing_key_gate_save_resumes_and_cancel_does_not(monkeypatch, isolated
     ],
 )
 def test_credential_precedence(exported, local, expected, isolated_configuration, tmp_path, monkeypatch):
-    isolated_configuration.write_text("TYPESAFE_API_KEY=saved-key\n")
+    isolated_configuration.write_text("TYPESAFE_API_KEY=saved-key\n", encoding="utf-8")
     if local:
-        (tmp_path / ".env").write_text(f"TYPESAFE_API_KEY={local}\n")
+        (tmp_path / ".env").write_text(f"TYPESAFE_API_KEY={local}\n", encoding="utf-8")
     if exported:
         monkeypatch.setenv("TYPESAFE_API_KEY", exported)
     keys.apply_credentials()

@@ -215,7 +215,7 @@ def serve(
     previous = {s: signal.signal(s, lambda *_: stop.set()) for s in (signal.SIGTERM, signal.SIGINT)}
     watcher = threading.Thread(target=_watch_stop_file, args=(directory, stop),
                                name=f"aihf-stop-watch-{directory.name}", daemon=True)
-    (directory / PID_FILE).write_text(str(os.getpid()))
+    (directory / PID_FILE).write_text(str(os.getpid()), encoding="utf-8")
     watcher.start()
     try:
         run(directory, data_client, stop=stop, build_fund=build_fund, on_record=on_record, on_event=on_event)
@@ -300,7 +300,7 @@ def stop_runner(directory: str | Path) -> bool:
     pid = _read_pid(directory)
     if pid is None or not is_running(directory):
         return False
-    (directory / STOP_FILE).write_text(str(pid))
+    (directory / STOP_FILE).write_text(str(pid), encoding="utf-8")
     if not _WINDOWS:
         try:
             os.kill(pid, signal.SIGTERM)
@@ -324,7 +324,7 @@ def spawn_runner(directory: Path) -> int:
         detach: dict = {"creationflags": flags}
     else:
         detach = {"start_new_session": True}
-    log = (directory / _RUNNER_LOG).open("a")
+    log = (directory / _RUNNER_LOG).open("a", encoding="utf-8")
     with log:
         child = subprocess.Popen(
             [sys.executable, "-m", "hedge_fund.run", "paper", "run", directory.name],
@@ -337,6 +337,6 @@ def spawn_runner(directory: Path) -> int:
 def _read_pid(directory: str | Path) -> int | None:
     path = Path(directory) / PID_FILE
     try:
-        return int(path.read_text().strip())
+        return int(path.read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
         return None

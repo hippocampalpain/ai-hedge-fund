@@ -72,7 +72,7 @@ def test_minute_is_a_rebalance_every_bar_and_periods_read_the_date_of_a_bar():
 
 
 def test_records_written_before_print_times_existed_still_verify():
-    record = SessionRecord.model_validate_json(FIXTURE.read_text())
+    record = SessionRecord.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
     assert record.snapshot_times is None and record.decision is not None
     assert record.hash == record.compute_hash()
     # The field counts the moment it is set; a bar's record is not a day's.

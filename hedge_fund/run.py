@@ -250,7 +250,7 @@ def _backtest(args, parser: argparse.ArgumentParser, console: Console) -> None:
     print(payload)
     saved = save_result(result)
     if args.out:
-        Path(args.out).write_text(payload)
+        Path(args.out).write_text(payload, encoding="utf-8")
     m = result.metrics
     console.print(
         f"[bold]{spec.name}[/] {result.start} → {result.end}  ·  "

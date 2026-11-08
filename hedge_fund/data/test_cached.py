@@ -113,9 +113,9 @@ def test_daily_price_entries_without_fetch_metadata_are_refreshed(tmp_path):
     fd = CachedDataClient(inner, cache_dir=tmp_path)
     fd.get_prices("AAPL", "2024-01-01", "2024-01-01")
     path = next(tmp_path.glob("*.json"))
-    payload = json.loads(path.read_text())
+    payload = json.loads(path.read_text(encoding="utf-8"))
     payload.pop("fetched_at")
-    path.write_text(json.dumps(payload))
+    path.write_text(json.dumps(payload), encoding="utf-8")
     fd.get_prices("AAPL", "2024-01-01", "2024-01-01")
     assert inner.calls == 2
 

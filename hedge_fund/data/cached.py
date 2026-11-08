@@ -142,13 +142,13 @@ class CachedDataClient:
         if not path.exists():
             return None
         try:
-            return json.loads(path.read_text())
+            return json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return None  # corrupt entry -> miss; rewritten on fetch
 
     def _write(self, key: str, payload: dict) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)
-        (self._dir / f"{key}.json").write_text(json.dumps(payload))
+        (self._dir / f"{key}.json").write_text(json.dumps(payload), encoding="utf-8")
 
     def _fresh(self, hit: dict, method: str, params: dict) -> bool:
         """Whether a cached answer can still be served.

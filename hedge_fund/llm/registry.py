@@ -42,7 +42,7 @@ def load_api_models() -> list[tuple[str, str, str]]:
     malformed — a broken registry should cost you the picker, not the app.
     """
     try:
-        entries = json.loads(API_MODELS_PATH.read_text())
+        entries = json.loads(API_MODELS_PATH.read_text(encoding="utf-8"))
         models = [(e["display_name"], e["model_name"], e["provider"])
                   for e in entries]
     except (OSError, ValueError, KeyError, TypeError):

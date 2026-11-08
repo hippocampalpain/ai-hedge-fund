@@ -299,14 +299,14 @@ risk:
   max_position_pct: 0.25
   max_gross_exposure: 1.0
 capital: 100000
-""")
+""", encoding="utf-8")
     output = tmp_path / "result.json"
     monkeypatch.setattr(sys, "argv", ["aihf", "--model", "jev-1.13.0", "backtest", str(mandate),
                                      "--universe", "AAPL,MSFT", "--start", "2025-01-14",
                                      "--end", "2025-01-15", "--out", str(output)])
     _serve(http, _http_response(), _http_response(_response("bearish")))
     run.main()
-    result = FundBacktestResult.model_validate_json(output.read_text())
+    result = FundBacktestResult.model_validate_json(output.read_text(encoding="utf-8"))
     assert FundBacktestResult.model_validate_json(capsys.readouterr().out) == result
     assert [r.session for r in result.records] == ["2025-01-14", "2025-01-15"]
     decided, executed = result.records[0].decision, result.records[1].executed
@@ -321,7 +321,7 @@ capital: 100000
     assert http[0].call_count == 2
     assert len(list((tmp_path / "research").glob("jev-test-2025-01-14-2025-01-15-*.json"))) == 1
     run.main()
-    second = FundBacktestResult.model_validate_json(output.read_text()).records[1].executed
+    second = FundBacktestResult.model_validate_json(output.read_text(encoding="utf-8")).records[1].executed
     capsys.readouterr()
     assert second.final_weights == first.final_weights
     assert second.positions == first.positions

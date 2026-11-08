@@ -244,7 +244,7 @@ def test_paper_screen_works_the_kill_switch_and_sessions_reads_the_ledger(tmp_pa
             assert app.screen is screen
 
             # d deletes the fund — ledger, book, definition and backtests — after a yes.
-            (paths.MANDATES_DIR / "alpha.yaml").write_text(yaml.safe_dump(spec.model_dump()))
+            (paths.MANDATES_DIR / "alpha.yaml").write_text(yaml.safe_dump(spec.model_dump()), encoding="utf-8")
             await pilot.press("d")
             modal = app.screen
             assert isinstance(modal, funds.ConfirmWipeScreen)
@@ -308,7 +308,7 @@ def test_paper_screen_space_starts_and_stops_a_runner_at_any_cadence(monkeypatch
 
     def spawn(path):
         spawned.append(path)
-        (path / PID_FILE).write_text(str(os.getpid()))  # what the real runner does on start
+        (path / PID_FILE).write_text(str(os.getpid()), encoding="utf-8")  # what the real runner does on start
         return os.getpid()
 
     def stop(path):

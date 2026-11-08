@@ -20,7 +20,7 @@ def save_result(result: FundBacktestResult) -> Path:
     paths.RESEARCH_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     path = paths.RESEARCH_DIR / f"{result.fund}-{result.start}-{result.end}-{stamp}.json"
-    path.write_text(result.model_dump_json(indent=2))
+    path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
     return path
 
 
@@ -28,7 +28,7 @@ def summarize(path: Path, mtime: float) -> dict | None:
     """One saved backtest result as the light summary the history pane
     renders. None if the file is unreadable or not a backtest."""
     try:
-        d = json.loads(path.read_text())
+        d = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(d, dict) or "metrics" not in d:
             return None
         m = d["metrics"]

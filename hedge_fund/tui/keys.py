@@ -46,7 +46,7 @@ def save_credential(env_var: str, value: str) -> Path:
     """
     line = f"{env_var}={_quote(value)}"
     if ENV_PATH.exists():
-        original = ENV_PATH.read_text()
+        original = ENV_PATH.read_text(encoding="utf-8")
         # Match an assignment at the start of a line, optionally exported and
         # optionally commented-out, so re-saving a disabled key revives it.
         pattern = re.compile(
@@ -59,7 +59,7 @@ def save_credential(env_var: str, value: str) -> Path:
     else:
         updated = f"{line}\n"
 
-    ENV_PATH.write_text(updated)
+    ENV_PATH.write_text(updated, encoding="utf-8")
     ENV_PATH.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600 — secrets are not world-readable
     os.environ[env_var] = value
     return ENV_PATH

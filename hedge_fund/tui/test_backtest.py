@@ -54,7 +54,7 @@ def test_backtest_daily_board_matches_final_metrics_and_uses_fill_dates(size, tm
             # Reopening the saved file lands on the same view, pixel for pixel
             # where it matters: the tiles, the header, the tape.
             path = tmp_path / "saved.json"
-            path.write_text(result.model_dump_json())
+            path.write_text(result.model_dump_json(), encoding="utf-8")
             await app.push_screen(backtest.BacktestScreen(record.spec, saved=path))
             await pilot.pause()
             reopened = app.screen
@@ -85,7 +85,7 @@ def test_tape_rows_use_the_execution_date_and_the_position_after_the_fill():
 def test_reopening_an_unreadable_result_fails_loud(tmp_path):
     record = make_cycle(make_signal())
     path = tmp_path / "broken.json"
-    path.write_text("{not json")
+    path.write_text("{not json", encoding="utf-8")
     async def scenario():
         app = HedgeFundApp()
         async with app.run_test() as pilot:

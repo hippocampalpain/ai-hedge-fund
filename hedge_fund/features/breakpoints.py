@@ -127,8 +127,8 @@ def load_breakpoints(
                 raise
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text)
-    return MEBreakpoints.parse(path.read_text())
+            path.write_text(text, encoding="utf-8")
+    return MEBreakpoints.parse(path.read_text(encoding="utf-8"))
 
 
 class NoBreakpoints(MEBreakpoints):

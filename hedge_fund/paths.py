@@ -49,5 +49,5 @@ def write_atomic(path: Path, text: str) -> None:
     mid-write leaves the old file intact rather than a truncated one."""
     path = Path(path)
     tmp = path.with_name(f".{path.name}.tmp")
-    tmp.write_text(text)
+    tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)

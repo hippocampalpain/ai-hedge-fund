@@ -184,7 +184,7 @@ class BacktestScreen(Screen):
         the largest result on disk parses in well under a second."""
         self.query_one("#bt-panes", ContentSwitcher).current = "bt-run"
         try:
-            result = FundBacktestResult.model_validate_json(path.read_text())
+            result = FundBacktestResult.model_validate_json(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:  # fail loud, in the UI
             self._fail(exc)
             return

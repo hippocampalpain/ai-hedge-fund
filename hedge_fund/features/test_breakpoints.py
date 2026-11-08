@@ -77,19 +77,19 @@ def test_load_fetches_once_then_reads_the_cache(tmp_path):
 
 def test_load_refreshes_a_stale_cache(tmp_path):
     path = tmp_path / "ME_Breakpoints.csv"
-    path.write_text(SAMPLE)
+    path.write_text(SAMPLE, encoding="utf-8")
     old = time.time() - 40 * 86400
     os.utime(path, (old, old))
 
     newer = SAMPLE.replace("Copyright", _row("202408", 130) + "\nCopyright")
     table = load_breakpoints(path, fetch=lambda: newer)
     assert table.latest_month == "202408"
-    assert "202408" in path.read_text()
+    assert "202408" in path.read_text(encoding="utf-8")
 
 
 def test_load_keeps_a_stale_cache_when_the_fetch_fails(tmp_path):
     path = tmp_path / "ME_Breakpoints.csv"
-    path.write_text(SAMPLE)
+    path.write_text(SAMPLE, encoding="utf-8")
     old = time.time() - 40 * 86400
     os.utime(path, (old, old))
 

@@ -329,7 +329,7 @@ def _validation_message(path: str | Path, exc: ValidationError) -> str:
 
 def _read_yaml(path: str | Path) -> dict[str, Any]:
     try:
-        data = yaml.safe_load(Path(path).read_text())
+        data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
         raise ValueError(f"{path}: cannot read configuration: {exc}") from exc
     if not isinstance(data, dict):

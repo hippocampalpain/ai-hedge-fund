@@ -243,14 +243,14 @@ def test_a_daily_fund_is_run_unattended_too_catching_up_after_each_midnight(tmp_
 def test_serve_holds_a_pid_file_and_stops_on_sigterm(tmp_path, monkeypatch):
     directory = deploy("bars", _spec(), ["AAPL"], root=tmp_path)
     assert not is_running(directory) and not stop_runner(directory)
-    (directory / PID_FILE).write_text("999999999")
+    (directory / PID_FILE).write_text("999999999", encoding="utf-8")
     assert not is_running(directory)  # a stale pid is not a runner
 
     import hedge_fund.paper.runner as runner
     seen = {}
 
     def quick(directory, data, *, stop, **kwargs):
-        seen["pid"] = int((directory / PID_FILE).read_text())
+        seen["pid"] = int((directory / PID_FILE).read_text(encoding="utf-8"))
         seen["running"] = is_running(directory)
         threading.Timer(0.05, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
         seen["stopped"] = stop.wait(5)
@@ -260,7 +260,7 @@ def test_serve_holds_a_pid_file_and_stops_on_sigterm(tmp_path, monkeypatch):
     assert seen == {"pid": os.getpid(), "running": True, "stopped": True}
     assert not (directory / PID_FILE).exists() and not is_running(directory)
     # Two runners on one fund is a race on the ledger: the second refuses.
-    (directory / PID_FILE).write_text(str(os.getpid()))
+    (directory / PID_FILE).write_text(str(os.getpid()), encoding="utf-8")
     with pytest.raises(RuntimeError, match="already running"):
         serve(directory, _tape(_at(DAY, "12:59:00")))
 
@@ -289,10 +289,10 @@ def windows(monkeypatch):
 def test_windows_liveness_and_stop_never_send_a_signal(tmp_path, windows):
     from hedge_fund.paper import STOP_FILE
     directory = deploy("bars", _spec(), ["AAPL"], root=tmp_path)
-    (directory / PID_FILE).write_text(str(os.getpid()))   # what test_run's minute-fund test does
+    (directory / PID_FILE).write_text(str(os.getpid()), encoding="utf-8")   # what test_run's minute-fund test does
     assert is_running(directory)
     assert stop_runner(directory) and (directory / STOP_FILE).exists()
-    (directory / PID_FILE).write_text("999999999")
+    (directory / PID_FILE).write_text("999999999", encoding="utf-8")
     assert not is_running(directory) and not stop_runner(directory)
 
 
@@ -332,7 +332,7 @@ def test_serve_cleans_up_when_the_loop_raises(tmp_path, monkeypatch):
 def test_a_stale_stop_file_does_not_stop_the_next_runner(tmp_path, monkeypatch):
     from hedge_fund.paper import STOP_FILE, runner
     directory = deploy("bars", _spec(), ["AAPL"], root=tmp_path)
-    (directory / STOP_FILE).write_text("123")
+    (directory / STOP_FILE).write_text("123", encoding="utf-8")
     monkeypatch.setattr(runner, "_STOP_POLL", 0.02)
     seen = {}
 

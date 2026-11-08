@@ -66,7 +66,7 @@ def deploy(
     )
     directory.mkdir(parents=True)
     (directory / FUND_FILE).write_text(
-        yaml.safe_dump(deployed.model_dump(), sort_keys=False)
+        yaml.safe_dump(deployed.model_dump(), sort_keys=False), encoding="utf-8"
     )
     PaperBroker.create(directory / BROKER_FILE, spec.capital, spec.costs)
     Ledger(directory).init()
@@ -77,7 +77,7 @@ def load_deployed(directory: str | Path) -> DeployedFund:
     """Read paper/<name>/fund.yaml, raising ValueError with the path on any problem."""
     path = Path(directory) / FUND_FILE
     try:
-        data = yaml.safe_load(path.read_text())
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
         raise ValueError(f"{path}: cannot read the deployed fund: {exc}") from exc
     if not isinstance(data, dict):

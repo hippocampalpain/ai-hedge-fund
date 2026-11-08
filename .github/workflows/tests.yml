@@ -1,0 +1,36 @@
+name: tests
+
+on:
+  push:
+    branches: [main, korea-mode]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    name: pytest (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.12"]
+    env:
+      # Test the defaults a user's PC has: no UTF-8 mode, no API keys.
+      PYTHONUTF8: "0"
+      PYTHONFAULTHANDLER: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install Poetry
+        run: python -m pip install --upgrade pip poetry
+      - name: Install dependencies
+        run: poetry install --no-interaction
+      - name: Show encodings
+        run: poetry run python -c "import locale, sys; print(locale.getpreferredencoding(False), sys.getfilesystemencoding(), sys.stdout.encoding, sys.flags.utf8_mode)"
+      - name: Run tests
+        # faulthandler_timeout dumps every thread's stack if one test hangs
+        run: poetry run pytest -q -rfE -o faulthandler_timeout=120

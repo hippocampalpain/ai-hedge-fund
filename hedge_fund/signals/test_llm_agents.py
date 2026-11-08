@@ -202,7 +202,7 @@ def test_quiet_bars_share_one_prompt_and_a_headline_changes_it(tmp_path):
     first = agent.predict("TEST", "2025-01-15T09:35:00", client)
     second = agent.predict("TEST", "2025-01-15T09:40:00", client)
     assert llm.calls == 1 and second.metadata["cached"] is True
-    record = json.loads(next((tmp_path / "llm").glob("*.json")).read_text())
+    record = json.loads(next((tmp_path / "llm").glob("*.json")).read_text(encoding="utf-8"))
     assert "Since the previous close:" in record["user"] and "Headlines: none" in record["user"]
     assert "09:35" not in record["user"] and "09:40" not in record["user"]
 
@@ -214,8 +214,8 @@ def test_quiet_bars_share_one_prompt_and_a_headline_changes_it(tmp_path):
 
     # A daily session carries no such block.
     agent.predict("TEST", "2025-01-15", client)
-    daily = [json.loads(p.read_text()) for p in (tmp_path / "llm").glob("*.json")
-             if json.loads(p.read_text())["as_of"] == "2025-01-15"]
+    daily = [json.loads(p.read_text(encoding="utf-8")) for p in (tmp_path / "llm").glob("*.json")
+             if json.loads(p.read_text(encoding="utf-8"))["as_of"] == "2025-01-15"]
     assert daily and "Since the previous close" not in daily[0]["user"]
 
 
@@ -225,7 +225,7 @@ def test_prompt_and_response_persisted(tmp_path):
 
     records = list((tmp_path / "llm").glob("*.json"))
     assert len(records) == 1
-    record = json.loads(records[0].read_text())
+    record = json.loads(records[0].read_text(encoding="utf-8"))
     assert record["agent"] == "buffett"
     assert "You are Warren Buffett" in record["system"]
     assert "2024-12-31" in record["user"]  # the rendered snapshot
@@ -240,7 +240,7 @@ def test_blind_agent_prompt_withholds_ticker_and_dates(tmp_path):
                          blind=True, breakpoints=table)
     signal = agent.predict("TEST", "2025-01-15", MockDataClient(metrics=_history()))
 
-    record = json.loads(next((tmp_path / "llm").glob("*.json")).read_text())
+    record = json.loads(next((tmp_path / "llm").glob("*.json")).read_text(encoding="utf-8"))
     assert "TEST" not in record["user"]
     assert "2024-12-31" not in record["user"]
     assert "t-0 | " in record["user"]
@@ -261,7 +261,7 @@ def test_agents_are_not_blind_unless_asked(tmp_path):
     agent = _agent(tmp_path, FakeLLM(BULLISH))
     agent.predict("TEST", "2025-01-15", MockDataClient(metrics=_history()))
 
-    record = json.loads(next((tmp_path / "llm").glob("*.json")).read_text())
+    record = json.loads(next((tmp_path / "llm").glob("*.json")).read_text(encoding="utf-8"))
     assert "Company: TEST" in record["user"]
     assert "2024-12-31" in record["user"]
     assert "percentile" not in record["user"]  # live prompts never load breakpoints
@@ -273,7 +273,7 @@ def test_failed_parse_still_persists_response(tmp_path):
 
     records = list((tmp_path / "llm").glob("*.json"))
     assert len(records) == 1
-    record = json.loads(records[0].read_text())
+    record = json.loads(records[0].read_text(encoding="utf-8"))
     assert record["response"] == "garbage"
     assert "parse_error" in record
 

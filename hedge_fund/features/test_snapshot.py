@@ -278,6 +278,7 @@ def test_us_snapshots_have_no_leverage_note_and_hash_as_before():
     """The 금융업 note is Korean-mode only: a US company (no location/industry_code)
     renders no note, and the hash ignores the empty field."""
     import hashlib
+
     from hedge_fund.features.snapshot import FundamentalsSnapshot, PeriodFundamentals
 
     snap = FundamentalsSnapshot(ticker="JPM", as_of="2025-10-23", sector="Financials",

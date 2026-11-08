@@ -262,7 +262,10 @@ def _leverage_note(facts) -> str | None:
     other company — and every US company — gets None."""
     if facts is None or facts.location != "KR" or not facts.industry_code:
         return None
-    from hedge_fund.data.kr.symbols import FINANCIAL_LEVERAGE_NOTE, is_financial_industry
+    from hedge_fund.data.kr.symbols import (
+        FINANCIAL_LEVERAGE_NOTE,
+        is_financial_industry,
+    )
     return FINANCIAL_LEVERAGE_NOTE if is_financial_industry(facts.industry_code) else None
 
 

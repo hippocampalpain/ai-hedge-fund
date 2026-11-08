@@ -3,7 +3,13 @@
 
 import pytest
 
-from hedge_fund.llm.client import ChatLLM, is_rate_limited, is_transient, make_llm, RateLimitPolicy
+from hedge_fund.llm.client import (
+    ChatLLM,
+    RateLimitPolicy,
+    is_rate_limited,
+    is_transient,
+    make_llm,
+)
 
 
 class ResourceExhausted(Exception):
@@ -182,6 +188,7 @@ def test_retry_hints_are_read_in_every_form():
 
 def test_a_long_server_wait_abstains_at_once_and_logs_the_daily_quota(caplog):
     import logging
+
     from hedge_fund.llm.client import QuotaExhausted
     calls, waits = [], []
     now = [1000.0]

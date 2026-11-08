@@ -24,7 +24,7 @@ import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Protocol, runtime_checkable
+from typing import ClassVar, Protocol, runtime_checkable
 
 import requests
 
@@ -149,7 +149,7 @@ class RateLimitPolicy:
     _semaphores: dict[int, threading.BoundedSemaphore] = {}
     _lock = threading.Lock()
     # model → monotonic time until which its daily quota is known spent (process wide)
-    _exhausted: dict[str, float] = {}
+    _exhausted: ClassVar[dict[str, float]] = {}
 
     def __init__(self, max_concurrency: int = 1, max_retries: int = 6, base_delay: float = 5.0,
                  max_delay: float = 120.0, sleep: Callable[[float], None] = time.sleep,

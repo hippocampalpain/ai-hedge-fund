@@ -33,6 +33,14 @@ pydantic = "^2.4.2"
 scipy = "^1.11.0"
 pyyaml = "^6.0.3"
 textual = "^8.2.8"
+# --- 한국 모드(DATA_PROVIDER=kr) 데이터 소스 ---
+pykrx = ">=1.2.4"
+finance-datareader = ">=0.9.90"
+# 최신 OpenDartReader(0.2.4+)는 Python 3.13 이상만 지원 → 버전별로 나눔
+opendartreader = [
+    {version = "0.2.3", python = "<3.13"},
+    {version = "^0.3.3", python = ">=3.13"},
+]
 # Pay Financial Datasets per call with x402 instead of an API key: `pip install aihf[x402]`.
 x402 = {version = "^2.26", extras = ["evm", "requests"], optional = true}
 

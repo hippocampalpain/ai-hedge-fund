@@ -6,7 +6,8 @@ what everything is worth at a session. A daily fund answers with completed
 New York dates and daily closes; a minute fund with bar boundaries and the
 prices at them. The engine does not know which it is holding.
 
-    DailyClock  completed dates, previous calendar day, exact daily closes
+    DailyClock  completed dates, previous session (the previous calendar
+                day when no trading grid is given), exact daily closes
     LiveClock   real-time snapshots taken at the boundary — a minute fund's
                 paper runner
     BarClock    historical minute bars, for a provider that serves them;
@@ -21,6 +22,7 @@ reads the same price the engine executes with and never the wire.
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
@@ -62,15 +64,25 @@ class Clock(Protocol):
 
 
 class DailyClock:
-    """Today's behaviour, unchanged: sessions are completed NY dates."""
+    """Sessions are completed dates.
 
-    def __init__(self, data: DataClient) -> None:
+    Given *sessions* — the trading grid a backtest replays (the benchmark's
+    real trading days) — the information cutoff for a decision executing at a
+    session is the previous trading session, so analysts are only ever asked
+    about trading days. Without a grid (paper runs) it is the previous
+    calendar day, as before.
+    """
+
+    def __init__(self, data: DataClient, sessions: list[str] | None = None) -> None:
         self._data = data
+        self._sessions = sorted(sessions) if sessions else None
 
     def is_complete(self, session: str) -> bool:
         return session <= completed_through()
 
     def previous(self, session: str) -> str:
+        if self._sessions:
+            return previous_session_on_grid(self._sessions, session)
         return previous_day(session)
 
     def marks(self, tickers: list[str], session: str) -> Marked:
@@ -78,6 +90,13 @@ class DailyClock:
 
     def session_date(self, session: str) -> str:
         return session
+
+
+def previous_session_on_grid(sessions: list[str], session: str) -> str:
+    """The last trading day on the sorted grid *sessions* before *session*;
+    the previous calendar day when the grid has none before it."""
+    i = bisect_left(sessions, session[:10])
+    return sessions[i - 1] if i > 0 else previous_day(session)
 
 
 def exact_marks(tickers: list[str], session: str, data_client: DataClient) -> dict[str, float]:

@@ -122,23 +122,32 @@ class ChatLLM:
 
 class RateLimitPolicy:
     """Free-tier guard: at most *max_concurrency* calls in flight (process
-    wide, across threads) and exponential backoff on 429 / RESOURCE_EXHAUSTED.
+    wide, across threads) and exponential backoff on
 
-    Delay before retry n (0-based) is min(max_delay, base_delay * 2**n) plus
-    up to 1s of jitter, or the server's own "retry in Ns" hint when longer.
-    Any other error is raised at once — the agent abstains, as before.
+    - 429 / RESOURCE_EXHAUSTED (quota): up to *max_retries* retries;
+    - transient server or network failures — HTTP 500/502/503/504,
+      DEADLINE_EXCEEDED ("Deadline expired"), UNAVAILABLE, timeouts — up to
+      *transient_retries* retries.
+
+    Delay before retry n (0-based, counted per kind) is
+    min(max_delay, base_delay * 2**n) plus up to 1s of jitter, or the
+    server's own "retry in Ns" hint when longer. Any other error (bad
+    request, bad key …) is raised at once — the agent abstains, as before.
 
     Tunable from the environment: LLM_MAX_CONCURRENCY (default 1),
-    LLM_MAX_RETRIES (6), LLM_RETRY_BASE_SECONDS (5), LLM_RETRY_MAX_SECONDS (120).
+    LLM_MAX_RETRIES (6), LLM_TRANSIENT_RETRIES (3), LLM_RETRY_BASE_SECONDS (5),
+    LLM_RETRY_MAX_SECONDS (120).
     """
 
     _semaphores: dict[int, threading.BoundedSemaphore] = {}
     _lock = threading.Lock()
 
     def __init__(self, max_concurrency: int = 1, max_retries: int = 6, base_delay: float = 5.0,
-                 max_delay: float = 120.0, sleep: Callable[[float], None] = time.sleep) -> None:
+                 max_delay: float = 120.0, sleep: Callable[[float], None] = time.sleep,
+                 transient_retries: int = 3) -> None:
         self.max_concurrency = max(1, max_concurrency)
         self.max_retries = max(0, max_retries)
+        self.transient_retries = max(0, transient_retries)
         self.base_delay = base_delay
         self.max_delay = max_delay
         self._sleep = sleep
@@ -151,23 +160,31 @@ class RateLimitPolicy:
         return cls(
             max_concurrency=int(os.environ.get("LLM_MAX_CONCURRENCY", "1")),
             max_retries=int(os.environ.get("LLM_MAX_RETRIES", "6")),
+            transient_retries=int(os.environ.get("LLM_TRANSIENT_RETRIES", "3")),
             base_delay=float(os.environ.get("LLM_RETRY_BASE_SECONDS", "5")),
             max_delay=float(os.environ.get("LLM_RETRY_MAX_SECONDS", "120")),
         )
 
     def call(self, fn: Callable[[], str], model: str = "") -> str:
         with self._gate:
-            for attempt in range(self.max_retries + 1):
+            limited = transient = 0
+            while True:
                 try:
                     return fn()
                 except Exception as exc:
-                    if not is_rate_limited(exc) or attempt == self.max_retries:
+                    if is_rate_limited(exc) and limited < self.max_retries:
+                        delay = self.delay(limited, str(exc))
+                        limited += 1
+                        logger.warning("%s rate-limited (429/RESOURCE_EXHAUSTED); retry %d/%d in %.0fs",
+                                       model, limited, self.max_retries, delay)
+                    elif is_transient(exc) and transient < self.transient_retries:
+                        delay = self.delay(transient, str(exc))
+                        transient += 1
+                        logger.warning("%s transient error (%s); retry %d/%d in %.0fs",
+                                       model, _short(exc), transient, self.transient_retries, delay)
+                    else:
                         raise
-                    delay = self.delay(attempt, str(exc))
-                    logger.warning("%s rate-limited (429/RESOURCE_EXHAUSTED); retry %d/%d in %.0fs",
-                                   model, attempt + 1, self.max_retries, delay)
                     self._sleep(delay)
-        raise AssertionError("unreachable")
 
     def delay(self, attempt: int, message: str = "") -> float:
         backoff = min(self.max_delay, self.base_delay * (2 ** attempt))
@@ -182,6 +199,29 @@ def is_rate_limited(exc: BaseException) -> bool:
     text = f"{type(exc).__name__} {exc}"
     return ("429" in text or "RESOURCE_EXHAUSTED" in text or "ResourceExhausted" in text
             or "rate limit" in text.lower())
+
+
+_TRANSIENT_STATUS = re.compile(r"\b(500|502|503|504)\b")
+_TRANSIENT_WORDS = ("deadline expired", "deadline_exceeded", "deadlineexceeded", "unavailable",
+                    "serviceunavailable", "internalservererror", "internal server error",
+                    "bad gateway", "gateway timeout", "timed out", "timeout", "temporarily",
+                    "connection reset", "connection aborted", "remotedisconnected")
+
+
+def is_transient(exc: BaseException) -> bool:
+    """A failure worth retrying: 5xx (500/502/503/504), a deadline or
+    timeout, an unavailable server, a dropped connection. Not 429 (that has
+    its own budget) and not client errors such as 400/401/403."""
+    if is_rate_limited(exc):
+        return False
+    if isinstance(exc, TimeoutError | ConnectionError):
+        return True
+    text = f"{type(exc).__name__} {exc}"
+    return bool(_TRANSIENT_STATUS.search(text)) or any(w in text.lower() for w in _TRANSIENT_WORDS)
+
+
+def _short(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {str(exc)[:80]}"
 
 
 class JevLLM:
@@ -349,10 +389,15 @@ def make_llm(
                             max_retries=1)
     elif provider == "Google":
         from langchain_google_genai import ChatGoogleGenerativeAI
+        # Flash "thinking" models can take well over a minute on a long
+        # prompt; at 60s Google answers 504 "Deadline expired". The request
+        # deadline is GEMINI_TIMEOUT_SECONDS (default 180, never below the
+        # caller's timeout).
+        gemini_timeout = max(timeout, float(os.environ.get("GEMINI_TIMEOUT_SECONDS", "180")))
         chat = ChatGoogleGenerativeAI(model=model, api_key=api_key,
-                                      timeout=timeout, max_retries=1)
+                                      timeout=gemini_timeout, max_retries=1)
         # Free-tier quotas are per minute and per day: one call at a time,
-        # exponential backoff on 429 (RateLimitPolicy).
+        # exponential backoff on 429 and on 5xx / deadline errors (RateLimitPolicy).
         return ChatLLM(model, chat, on_token, rate_limit=RateLimitPolicy.from_env())
     elif provider == "xAI":
         from langchain_xai import ChatXAI

@@ -6,6 +6,11 @@
    which proxies that allow HTTPS only cannot carry.
 2. FinanceDataReader: stocks from Naver (fchart.stock.naver.com, adjusted
    prices), indices from FDR's GitHub cache (raw.githubusercontent.com).
+   Naver's daily *close* is not always the KRX official close: on
+   2026-10-20~11-06 (005930) open/high/low/volume (nearly) matched KRX but the close
+   differed on 11 of 14 days, while the 전일비 Naver itself shows the next day
+   was measured from the KRX close (= pykrx) on all 13 days checkable. So a fallback to FDR is
+   logged as a warning — PER/PBR and fills would be on a different close.
 3. FDR's GitHub daily KRX snapshot (one CSV per date with close, market cap
    and shares for every stock). Only from about March 2026; stocks only.
 
@@ -287,6 +292,10 @@ class PriceService:
                 logger.info("%s failed for %s (%s); trying the next source", source.name, symbol, failures[-1])
                 continue
             if bars:
+                if source.name == "fdr" and not is_index(symbol):
+                    logger.warning("%s: pykrx(KRX) 시세를 쓰지 못해 FinanceDataReader(네이버) 종가로 대체합니다. "
+                                   "네이버 종가는 KRX 공식 종가와 다를 수 있습니다 (docs/korea_mode/02_formulas.md 6절).",
+                                   symbol)
                 return sorted(bars, key=lambda b: b["date"]), source.name
         if failures:
             raise KRDataError(f"{symbol} {start}~{end} 시세를 받지 못했습니다 — " + " | ".join(failures))

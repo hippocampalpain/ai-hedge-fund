@@ -15,6 +15,7 @@ news (1차 버전), earnings surprises (no free consensus → PEAD stays neutral
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from datetime import date, timedelta
 
@@ -150,7 +151,9 @@ class KRDataClient:
 
         reports = fx.filed_by(self._load_reports(corp, start_year, end_year, end_date), end_date)
         quarters = fx.quarterize(reports, flow_items(), stock_items())
-        rows = fx.metrics_rows(ticker, quarters, period, price_at=lambda d: self._price_at(ticker, d))
+        # 최신 행은 평가일(end_date) 종가로, 과거 행은 각자의 공시일 종가로 밸류에이션한다.
+        rows = fx.metrics_rows(ticker, quarters, period, price_at=lambda d: self._price_at(ticker, d),
+                               valuation_date=end_date)
         return rows[:limit]
 
     def _load_reports(self, corp: str, start_year: int, end_year: int, end_date: str) -> list[fx.Report]:
@@ -171,8 +174,7 @@ class KRDataClient:
                     if report.shares is not None:
                         shares = report.shares
                     elif shares is not None:
-                        report = fx.Report(report.fiscal_year, report.quarter, report.filing_date,
-                                           report.fs_div, report.items, shares)
+                        report = dataclasses.replace(report, shares=shares)
                     out.append(report)
         return out
 
@@ -186,15 +188,17 @@ class KRDataClient:
         filed = receipt_date(rows[0])
         if filed is None:
             return []
+        counts = self._dart.share_counts(corp, year, reprt)
         return [fx.Report(year, quarter, filed, fs_div, extract_items(rows, reprt),
-                          _outstanding_shares(self._dart.share_counts(corp, year, reprt)))]
+                          _outstanding_shares(counts), _issued_shares(counts))]
 
     def _price_at(self, ticker: str, day: str) -> tuple[float | None, float | None]:
-        """Close and market cap on the filing date (or the last session before it)."""
+        """Close and market cap on *day* — a filing date, or the evaluation
+        date for the newest row — or the last session before it."""
         try:
             bar = self._prices.bar_on_or_before(ticker, day)
         except KRDataError as exc:
-            _log_once("price", ticker, "%s: 공시일 주가를 받지 못해 밸류에이션(PER 등)을 비워 둡니다: %s",
+            _log_once("price", ticker, "%s: 평가일·공시일 주가를 받지 못해 밸류에이션(PER 등)을 비워 둡니다: %s",
                       ticker, str(exc)[:200], level=logging.WARNING)
             return None, None
         if bar is None:
@@ -293,5 +297,16 @@ def _outstanding_shares(rows: list[dict]) -> float | None:
     if total is not None and total > 0:
         return total
     parts = [parse_amount(r.get("distb_stock_co")) for r in rows if (r.get("se") or "").strip() in ("보통주", "우선주")]
+    parts = [p for p in parts if p is not None]
+    return sum(parts) if parts else None
+
+
+def _issued_shares(rows: list[dict]) -> float | None:
+    """발행주식총수(자기주식 포함), 보통주+우선주 합계 — EPS의 가중평균 분모용.
+    1·3분기 보고서처럼 값이 '-'이면 None."""
+    total = next((parse_amount(r.get("istc_totqy")) for r in rows if (r.get("se") or "").strip() == "합계"), None)
+    if total is not None and total > 0:
+        return total
+    parts = [parse_amount(r.get("istc_totqy")) for r in rows if (r.get("se") or "").strip() in ("보통주", "우선주")]
     parts = [p for p in parts if p is not None]
     return sum(parts) if parts else None

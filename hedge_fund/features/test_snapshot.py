@@ -175,8 +175,8 @@ def test_blind_render_withholds_ticker_dates_and_dollars():
     assert "eps_idx" in text and "bvps_idx" in text and "fcf_idx" in text
     t0 = _cells(next(line for line in text.splitlines() if line.startswith("t-0 |")))
     t7 = _cells(next(line for line in text.splitlines() if line.startswith("t-7 |")))
-    assert t0[9:13] == ["250.0", "100.0", "100.0", "1.00"]  # eps yoy only on t-0
-    assert t7[9:13] == ["100.0", "100.0", "100.0", "-"]
+    assert t0[10:14] == ["250.0", "100.0", "100.0", "1.00"]  # eps yoy only on t-0
+    assert t7[10:14] == ["100.0", "100.0", "100.0", "-"]
     assert "Market cap (latest filed): 3200.0B" in shown
 
 
@@ -246,7 +246,7 @@ def test_blind_index_dashes_without_a_positive_base_and_keeps_sign():
     metrics[0].earnings_per_share = -1.0  # sign survives: -1 / 2 * 100
     text = build_snapshot("TEST", "2025-01-15", MockDataClient(metrics=metrics)).render(blind=True)
     t0 = _cells(next(line for line in text.splitlines() if line.startswith("t-0 |")))
-    assert t0[9:12] == ["-50.0", "-", "-"]
+    assert t0[10:13] == ["-50.0", "-", "-"]
 
 
 def _cells(line: str) -> list[str]:
@@ -257,3 +257,17 @@ def test_blind_render_is_opt_in():
     snap = build_snapshot("TEST", "2025-01-15", MockDataClient(metrics=_history()))
     assert snap.render() == snap.render(blind=False)
     assert "Company: TEST" in snap.render()
+
+
+def test_price_to_book_is_shown_outright_in_both_renders():
+    """P/B is given, not left for the analyst to infer from P/E × ROE (that
+    product overstates it when ROE is on average equity)."""
+    from hedge_fund.features.snapshot import FundamentalsSnapshot, PeriodFundamentals
+
+    periods = [PeriodFundamentals(report_period=f"2025-0{q}-30", price_to_earnings_ratio=12.04,
+                                  price_to_book_ratio=2.51, return_on_equity=0.31) for q in (6, 3)]
+    snap = FundamentalsSnapshot(ticker="TEST", as_of="2025-10-23", periods=periods)
+    for text in (snap.render(), snap.render(blind=True)):
+        header = next(line for line in text.splitlines() if "P/E" in line).split(" | ")
+        row = next(line for line in text.splitlines() if "12.04" in line).split(" | ")
+        assert header[header.index("P/B")] == "P/B" and row[header.index("P/B")] == "2.51"

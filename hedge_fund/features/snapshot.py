@@ -38,6 +38,10 @@ class PeriodFundamentals(BaseModel):
     filing_date: str | None = None
     market_cap: float | None = None
     price_to_earnings_ratio: float | None = None
+    # Given outright so an analyst never has to back P/B out of P/E × ROE —
+    # that identity holds only with period-end equity, and ROE here is on
+    # average equity, so the inferred figure runs high.
+    price_to_book_ratio: float | None = None
     return_on_equity: float | None = None
     gross_margin: float | None = None
     operating_margin: float | None = None
@@ -121,13 +125,14 @@ class FundamentalsSnapshot(BaseModel):
             f"  Debt/equity (latest): {_fmt(self.debt_to_equity_latest)}",
             "",
             "History (trailing-twelve-month periods, newest first):",
-            "period | filed | mktcap | P/E | ROE | gross_m | op_m | net_m | D/E "
+            "period | filed | mktcap | P/E | P/B | ROE | gross_m | op_m | net_m | D/E "
             "| curr | rev_gr | EPS | BVPS | FCF/sh",
         ]
         for p in self.periods:
             lines.append(
                 f"{p.report_period} | {p.filing_date or '?'} | {_fmt(p.market_cap)} "
-                f"| {_fmt(p.price_to_earnings_ratio)} | {_fmt(p.return_on_equity)} "
+                f"| {_fmt(p.price_to_earnings_ratio)} | {_fmt(p.price_to_book_ratio)} "
+                f"| {_fmt(p.return_on_equity)} "
                 f"| {_fmt(p.gross_margin)} | {_fmt(p.operating_margin)} "
                 f"| {_fmt(p.net_margin)} | {_fmt(p.debt_to_equity)} "
                 f"| {_fmt(p.current_ratio)} | {_fmt(p.revenue_growth)} "
@@ -158,12 +163,13 @@ class FundamentalsSnapshot(BaseModel):
             f"  Debt/equity (latest): {_fmt(self.debt_to_equity_latest)}",
             "",
             "History (trailing-twelve-month periods, newest first):",
-            "period | P/E | ROE | gross_m | op_m | net_m | D/E "
+            "period | P/E | P/B | ROE | gross_m | op_m | net_m | D/E "
             "| curr | rev_gr | eps_idx | bvps_idx | fcf_idx | eps_yoy",
         ]
         for i, p in enumerate(self.periods):
             lines.append(
-                f"t-{i} | {_fmt(p.price_to_earnings_ratio)} | {_fmt(p.return_on_equity)} "
+                f"t-{i} | {_fmt(p.price_to_earnings_ratio)} | {_fmt(p.price_to_book_ratio)} "
+                f"| {_fmt(p.return_on_equity)} "
                 f"| {_fmt(p.gross_margin)} | {_fmt(p.operating_margin)} "
                 f"| {_fmt(p.net_margin)} | {_fmt(p.debt_to_equity)} "
                 f"| {_fmt(p.current_ratio)} | {_fmt(p.revenue_growth)} "

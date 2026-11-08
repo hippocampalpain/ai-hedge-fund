@@ -207,3 +207,11 @@ def test_a_stale_pending_is_refreshed_at_the_bar_before_execution():
     assert record.executed.original_assessment.as_of == f"{yesterday}T16:00:00"
     assert len(analyst.predict_calls) > asked_before  # refreshed, then decided again at 10:05
     assert record.executed.fills[0].price == 91.0
+
+
+def test_daily_clock_on_a_trading_grid_steps_back_to_the_previous_session():
+    from hedge_fund.pipeline.clock import previous_session_on_grid
+    grid = ["2024-06-06", "2024-06-07", "2024-06-10"]           # Thu, Fri, Mon
+    assert DailyClock(None, grid).previous("2024-06-10") == "2024-06-07"   # not Sunday 06-09
+    assert DailyClock(None).previous("2024-06-10") == "2024-06-09"         # no grid: calendar day
+    assert previous_session_on_grid(grid, "2024-06-06") == "2024-06-05"    # nothing earlier on the grid

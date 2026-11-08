@@ -18,11 +18,14 @@ Pipeline (every step is tested offline in test_kr_fundamentals.py):
 
 Formulas (TTM = 최근 4개 분기 합, 평균 = (이번 기말 + 4분기 전 기말) / 2):
 
-    EPS            = TTM 지배주주순이익 / 유통주식수
+    EPS            = TTM 지배주주순이익 / 기간 가중평균 발행주식수 (보통+우선,
+                     자기주식 포함 — 와이즈리포트 정의). 발행주식수가 없으면
+                     기말 유통주식수로 나눈다.
     BPS            = 지배주주지분 / 유통주식수
     PER            = 종가 / EPS                 (EPS ≤ 0 이면 None)
     PBR            = 종가 / BPS                 (BPS ≤ 0 이면 None)
     PSR            = 종가 / (TTM 매출 / 유통주식수)
+    종가           = 가장 최근 행: 평가일(as of) 종가. 과거 행: 그 행의 공시일 종가.
     ROE            = TTM 지배주주순이익 / 평균 지배주주지분
     ROA            = TTM 당기순이익 / 평균 자산총계
     부채비율(D/E)  = 부채총계 / 자본총계        (배수. 네이버의 % 값 ÷ 100)
@@ -56,6 +59,7 @@ class Report:
     fs_div: str                     # "CFS" | "OFS"
     items: dict[str, float | None]  # flows: YTD cumulative; stocks: period end
     shares: float | None = None     # 유통주식수 (발행주식 − 자기주식)
+    issued_shares: float | None = None  # 발행주식총수 (보통+우선, 자기주식 포함). 1·3분기 보고서에는 없음
 
     @property
     def ordinal(self) -> int:
@@ -75,6 +79,7 @@ class Quarter:
     flows: dict[str, float | None]   # this quarter alone
     stocks: dict[str, float | None]  # period-end balances
     shares: float | None = None
+    issued_shares: float | None = None
 
     @property
     def ordinal(self) -> int:
@@ -95,6 +100,7 @@ class Window:
     stocks: dict[str, float | None]
     shares: float | None
     prior_stocks: dict[str, float | None] = field(default_factory=dict)  # 4 quarters earlier
+    avg_issued_shares: float | None = None  # 기간 가중평균 발행주식수 (EPS 분모)
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +134,8 @@ def quarterize(reports: list[Report], flow_keys: list[str], stock_keys: list[str
             else:
                 flows = {k: _sub(r.items.get(k), prev.items.get(k)) for k in flow_keys}
                 filed = max(r.filing_date, prev.filing_date)
-        quarters.append(Quarter(r.fiscal_year, r.quarter, filed, r.fs_div, flows, stocks, r.shares))
+        quarters.append(Quarter(r.fiscal_year, r.quarter, filed, r.fs_div, flows, stocks, r.shares,
+                                r.issued_shares))
     return quarters
 
 
@@ -145,6 +152,7 @@ def windows(quarters: list[Quarter], period: str = "ttm") -> list[Window]:
     """
     span = 1 if period == "quarterly" else 4
     by_ord = {q.ordinal: q for q in quarters}
+    issued = issued_path(quarters)
     out: list[Window] = []
     for q in sorted(quarters, key=lambda x: x.ordinal, reverse=True):
         if period == "annual" and q.quarter != 4:
@@ -161,8 +169,47 @@ def windows(quarters: list[Quarter], period: str = "ttm") -> list[Window]:
             stocks=dict(q.stocks),
             shares=q.shares,
             prior_stocks=dict(prior.stocks) if prior is not None and prior.fs_div == q.fs_div else {},
+            avg_issued_shares=average_issued_shares(issued, q.ordinal, span),
         ))
     return out
+
+
+def issued_path(quarters: list[Quarter]) -> dict[int, float]:
+    """발행주식총수 at every quarter end the reports cover (by ordinal).
+
+    DART fills the count in 반기·사업보고서 only. A quarter end between two
+    known counts is interpolated linearly; one after the last known count
+    carries it forward; one before the first known count takes the first.
+    Only the reports passed in are used — already filtered to what was
+    public on the as-of date — so nothing here can see a later filing.
+    """
+    known = sorted((q.ordinal, q.issued_shares) for q in quarters
+                   if q.issued_shares is not None and q.issued_shares > 0)
+    if not known:
+        return {}
+    lo = min(min(q.ordinal for q in quarters) - 4, known[0][0])
+    hi = max(max(q.ordinal for q in quarters), known[-1][0])
+    path: dict[int, float] = {}
+    for o in range(lo, hi + 1):
+        before = [(k, v) for k, v in known if k <= o]
+        after = [(k, v) for k, v in known if k >= o]
+        if before and after:
+            (k0, v0), (k1, v1) = before[-1], after[0]
+            path[o] = v0 if k1 == k0 else v0 + (v1 - v0) * (o - k0) / (k1 - k0)
+        else:
+            path[o] = (before[-1] if before else after[0])[1]
+    return path
+
+
+def average_issued_shares(path: dict[int, float], ordinal: int, span: int) -> float | None:
+    """Time-weighted average over the *span* quarters ending at *ordinal*:
+    within each quarter the count moves linearly from one quarter end to the
+    next (trapezoid), so the window average is
+    (S0/2 + S1 + … + S(n-1) + Sn/2) / n over its n+1 quarter ends."""
+    points = [path.get(ordinal - span + i) for i in range(span + 1)]
+    if any(p is None for p in points):
+        return None
+    return (points[0] / 2 + sum(points[1:-1]) + points[-1] / 2) / span
 
 
 # ---------------------------------------------------------------------------
@@ -177,17 +224,25 @@ def metrics_rows(
     quarters: list[Quarter],
     period: str,
     price_at: PriceAt | None = None,
+    valuation_date: str | None = None,
 ) -> list[FinancialMetrics]:
-    """FinancialMetrics rows, newest first. *price_at(filing_date)* gives the
-    close and market cap on the filing date (valuation is as of the day the
-    numbers became public); None prices leave valuation fields None."""
+    """FinancialMetrics rows, newest first. *price_at(day)* gives the close
+    and market cap on *day* (or the last session before it); None prices
+    leave valuation fields None.
+
+    The newest row — the latest financials public on the as-of date — is
+    priced on *valuation_date* (PER/PBR/PSR, market cap, EV … as of the
+    evaluation day). Older rows stay priced on their own filing dates: the
+    history shows what each valuation was when those numbers came out.
+    Without *valuation_date* every row uses its filing date."""
     wins = windows(quarters, period)
     by_end = {w.period_end: w for w in wins}
     days = 365.0 * (1 if period == "quarterly" else 4) / 4
     rows: list[FinancialMetrics] = []
-    for w in wins:
+    for i, w in enumerate(wins):
         prior = by_end.get(_year_earlier(w.period_end))
-        close, market_cap = price_at(w.filing_date) if price_at else (None, None)
+        day = valuation_date[:10] if i == 0 and valuation_date else w.filing_date
+        close, market_cap = price_at(day) if price_at else (None, None)
         rows.append(compute_metrics(ticker, period, w, prior, close, market_cap, days))
     return rows
 
@@ -214,15 +269,15 @@ def compute_metrics(
     debt = _debt(s)
     cash = s.get("cash")
 
-    eps = _div(ni_parent, shares)
+    eps = _div(ni_parent, _eps_shares(w))
     bps = _div(equity_parent, shares)
     sps = _div(revenue, shares)
     ev = None if market_cap is None or debt is None or cash is None else market_cap + debt - cash
 
     # Growth versus the same window a year earlier
     p_f = prior.flows if prior else {}
-    p_shares = prior.shares if prior and prior.shares and prior.shares > 0 else None
-    prior_eps = _div(_first(p_f.get("net_income_parent"), p_f.get("net_income")), p_shares)
+    prior_eps = _div(_first(p_f.get("net_income_parent"), p_f.get("net_income")),
+                     _eps_shares(prior) if prior else None)
     eps_growth = _growth(eps, prior_eps)
 
     inv_turn = _div(f.get("cost_of_sales"), _avg(s.get("inventories"), ps.get("inventories")))
@@ -293,6 +348,14 @@ def compute_metrics(
 # ---------------------------------------------------------------------------
 # Small helpers — every one returns None on a missing input
 # ---------------------------------------------------------------------------
+
+def _eps_shares(w: Window) -> float | None:
+    """EPS denominator: the window's weighted average issued shares (보통+우선),
+    or — when DART gave no issued count — the period-end outstanding shares."""
+    if w.avg_issued_shares is not None and w.avg_issued_shares > 0:
+        return w.avg_issued_shares
+    return w.shares if w.shares and w.shares > 0 else None
+
 
 def _sub(a: float | None, b: float | None) -> float | None:
     return None if a is None or b is None else a - b

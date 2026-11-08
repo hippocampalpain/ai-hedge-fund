@@ -274,31 +274,38 @@ def _resolve_kr_universe(client, universe: list[str], parser: argparse.ArgumentP
 
 
 def _print_llm_estimate(console: Console, spec, universe: list[str], data, start: str, end: str) -> None:
-    """Before a Korean-mode backtest, say how many LLM calls it can take, so
-    a free-tier quota is not discovered halfway through.
-
-    Upper bound = LLM agents × tickers × trading days (what was asked for).
-    Agents only reason on rebalance sessions, and an unchanged snapshot is a
-    prompt-cache hit, so the real count is at most agents × tickers ×
-    rebalances — usually far less."""
+    """Before a Korean-mode backtest, say how many LLM calls it will take, so
+    a free-tier quota is not discovered halfway through."""
     from hedge_fund.backtesting.fund import build_schedule
-    from hedge_fund.signals import ALPHA_MODEL_REGISTRY, LLMAgent
 
-    agents = sorted({m.name for s in spec.strategies for m in s.models
-                     if issubclass(ALPHA_MODEL_REGISTRY[m.name], LLMAgent)})
     try:
         schedule = build_schedule(data, spec.benchmark, start, end, spec.rebalance)
     except ValueError as exc:
         console.print(f"[yellow]예상 LLM 호출 수를 계산하지 못했습니다: {exc}[/]")
         return
-    days, rebalances = len(schedule.closes), len(schedule.execution_dates)
-    n = len(agents) * len(universe)
+    estimate = llm_call_estimate(spec, universe, schedule)
+    agents = estimate["agents"]
     console.print(
         f"[bold]예상 LLM 호출 수[/] (LLM 에이전트 {len(agents)}개 {', '.join(agents) or '-'} × 종목 {len(universe)}개)\n"
-        f"  상한: {n} × 거래일 {days}일 = [bold]{n * days}회[/]\n"
-        f"  실제 최대: {n} × 리밸런싱 {rebalances}회 = [bold]{n * rebalances}회[/] "
-        f"(같은 재무 스냅샷은 캐시되어 실제로는 더 적음)"
+        f"  거래일 {estimate['sessions']}일 중 평가일(리밸런싱) {estimate['assessments']}일 "
+        f"({', '.join(schedule.assessment_dates)})\n"
+        f"  {len(agents) * len(universe)} × {estimate['assessments']} = [bold]{estimate['calls']}회[/] "
+        f"(평가일마다 그날 종가로 PER·PBR을 다시 계산하므로 날짜마다 새 호출. "
+        f"이미 성공한 호출은 캐시에서 읽어 빠짐. 재시도는 포함하지 않음)"
     )
+
+
+def llm_call_estimate(spec, universe: list[str], schedule) -> dict:
+    """LLM agents × tickers × assessment dates (trading days only). Each
+    assessment re-prices the newest financials on that day's close, so every
+    date is its own prompt: this is the count a fresh run makes."""
+    from hedge_fund.signals import ALPHA_MODEL_REGISTRY, LLMAgent
+
+    agents = sorted({m.name for s in spec.strategies for m in s.models
+                     if issubclass(ALPHA_MODEL_REGISTRY[m.name], LLMAgent)})
+    assessments = len(schedule.assessment_dates)
+    return {"agents": agents, "sessions": len(schedule.closes), "assessments": assessments,
+            "calls": len(agents) * len(universe) * assessments}
 
 
 # ---------------------------------------------------------------------------

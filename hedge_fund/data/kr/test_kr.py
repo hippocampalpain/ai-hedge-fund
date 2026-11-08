@@ -81,19 +81,23 @@ def statement_rows(year: int, quarter: int, *, use_name: bool = False, revenue: 
     return rows
 
 
-def share_rows(quarter: int) -> list[dict]:
-    """DART's 주식총수: filled in half-year and annual reports only."""
+def share_rows(quarter: int, issued: float | None = None) -> list[dict]:
+    """DART's 주식총수: filled in half-year and annual reports only.
+    *issued* adds 발행주식총수 (istc_totqy, 자기주식 포함) to the 합계 row."""
     if quarter in (1, 3):
-        return [{"se": "합계", "distb_stock_co": "-"}, {"se": "비고", "distb_stock_co": "-"}]
-    return [{"se": "보통주", "distb_stock_co": "8"}, {"se": "우선주", "distb_stock_co": "2"},
-            {"se": "합계", "distb_stock_co": "10"}]
+        return [{"se": "합계", "distb_stock_co": "-", "istc_totqy": "-"}, {"se": "비고", "distb_stock_co": "-"}]
+    total = {"se": "합계", "distb_stock_co": "10"}
+    if issued is not None:
+        total["istc_totqy"] = f"{issued:,.0f}"
+    return [{"se": "보통주", "distb_stock_co": "8"}, {"se": "우선주", "distb_stock_co": "2"}, total]
 
 
 class FakeDart:
     """In-memory DartClient: no network."""
 
-    def __init__(self, *, years=(2023, 2024), fs_div="CFS", acc_mt="12", insiders=None, **kw):
+    def __init__(self, *, years=(2023, 2024), fs_div="CFS", acc_mt="12", insiders=None, issued=None, **kw):
         self.kw = kw
+        self.issued = issued or {}  # (year, quarter) → 발행주식총수
         self.years = years
         self.fs_div = fs_div
         self.acc_mt = acc_mt
@@ -116,7 +120,8 @@ class FakeDart:
     def share_counts(self, corp, year, reprt):
         if year not in self.years:
             return []
-        return share_rows({v: k for k, v in REPORT.items()}[reprt])
+        quarter = {v: k for k, v in REPORT.items()}[reprt]
+        return share_rows(quarter, self.issued.get((year, quarter)))
 
     def insider_reports(self, corp):
         return self.insiders
@@ -196,6 +201,59 @@ def test_outstanding_shares_prefer_the_total_row_and_skip_dashes():
     assert _outstanding_shares([{"se": "보통주", "distb_stock_co": "8"}, {"se": "우선주", "distb_stock_co": "2"}]) == 10
 
 
+def test_issued_shares_read_the_total_row_or_add_the_classes():
+    from hedge_fund.data.kr.client import _issued_shares
+
+    assert _issued_shares(share_rows(2, issued=12)) == 12
+    assert _issued_shares(share_rows(1)) is None
+    assert _issued_shares([{"se": "보통주", "istc_totqy": "9"}, {"se": "우선주", "istc_totqy": "3"}]) == 12
+
+
+# ---------------------------------------------------------------------------
+# EPS: 지배주주순이익 ÷ 가중평균 발행주식수 (보통+우선, 와이즈리포트 정의)
+# ---------------------------------------------------------------------------
+
+# 2023 반기·기말 12주, 2024 반기 11주, 2024 기말 10주 (자기주식 소각으로 감소)
+ISSUED = {(2023, 2): 12, (2023, 4): 12, (2024, 2): 11, (2024, 4): 10}
+
+
+def test_issued_path_interpolates_between_filed_counts_and_carries_the_last():
+    reports = [fx.Report(y, q, filed(y, q), "CFS", {}, 10, ISSUED.get((y, q))) for y in (2023, 2024) for q in (1, 2, 3, 4)]
+    quarters = fx.quarterize(reports, [], [])
+    path = fx.issued_path(quarters)
+    o = {(y, q): y * 4 + q - 1 for y in (2023, 2024) for q in (1, 2, 3, 4)}
+    assert path[o[(2024, 1)]] == pytest.approx(11.5)   # 2023 기말 12 → 2024 반기 11 사이
+    assert path[o[(2024, 3)]] == pytest.approx(10.5)   # 2024 반기 11 → 기말 10 사이
+    assert path[o[(2023, 1)]] == 12                    # 첫 값 이전은 첫 값
+    # TTM 2024: (12/2 + 11.5 + 11 + 10.5 + 10/2) / 4 = 11
+    assert fx.average_issued_shares(path, o[(2024, 4)], 4) == pytest.approx(11.0)
+
+
+def test_eps_divides_by_the_weighted_average_issued_shares(tmp_path):
+    rows = _client(tmp_path, dart=FakeDart(issued=ISSUED)).get_financial_metrics("123450", "2025-06-30")
+    m = rows[0]
+    assert m.report_period == "2024-12-31"
+    assert m.earnings_per_share == pytest.approx(54 / 11)          # not 54 / 10 (기말 유통주식수)
+    assert m.price_to_earnings_ratio == pytest.approx(54 / (54 / 11))
+    assert m.book_value_per_share == pytest.approx(50.0)           # BPS keeps 기말 유통주식수 (KRX와 같음)
+
+
+def test_weighted_shares_never_use_a_count_filed_later(tmp_path):
+    """As of 2024-12-31 the 2024 사업보고서 (count 10) is not public: the 3분기
+    window carries the 반기 count (11) forward instead of interpolating to 10."""
+    rows = _client(tmp_path, dart=FakeDart(issued=ISSUED)).get_financial_metrics("123450", "2024-12-31")
+    q3 = rows[0]
+    assert q3.report_period == "2024-09-30"
+    # 2023Q3 12, 2023Q4 12, 2024Q1 11.5, 2024Q2 11, 2024Q3 11 → (6 + 12 + 11.5 + 11 + 5.5) / 4 = 11.5
+    ttm_ni = (40 - 30) + 12 + (25 - 12) + (39 - 25)
+    assert q3.earnings_per_share == pytest.approx(ttm_ni / 11.5)
+
+
+def test_eps_falls_back_to_outstanding_shares_without_an_issued_count(tmp_path):
+    rows = _client(tmp_path).get_financial_metrics("123450", "2025-06-30")
+    assert rows[0].earnings_per_share == pytest.approx(5.4)  # 54 / 10 (유통주식수)
+
+
 # ---------------------------------------------------------------------------
 # Quarter subtraction
 # ---------------------------------------------------------------------------
@@ -266,10 +324,38 @@ def test_quarterly_period_is_the_single_quarter(tmp_path):
     assert rows[0].earnings_per_share == pytest.approx(15 / 10)
 
 
-def test_valuation_is_priced_on_the_filing_date(tmp_path):
+def test_older_rows_are_priced_on_their_filing_dates(tmp_path):
     prices = FakePrices()
     _client(tmp_path, prices=prices).get_financial_metrics("123450", "2025-06-30")
-    assert "2025-03-10" in prices.asked and max(prices.asked) <= "2025-06-30"
+    assert "2024-11-14" in prices.asked and max(prices.asked) <= "2025-06-30"
+
+
+class DatedPrices(FakePrices):
+    """Close 54 until 2025-05-31, then 108 — so the pricing date is visible."""
+
+    def bar_on_or_before(self, symbol, day, lookback_days=10):
+        self.asked.append(day)
+        close = 54.0 if day < "2025-06-01" else 108.0
+        return {"date": day, "close": close, "market_cap": close * 10}
+
+
+def test_newest_row_is_repriced_on_the_evaluation_date(tmp_path):
+    """PER/PBR/PSR = 평가일 종가 ÷ 평가일까지 공시된 최신 재무 — not frozen at the filing date."""
+    client = _client(tmp_path, prices=DatedPrices())
+    may = client.get_financial_metrics("123450", "2025-05-30")[0]
+    june = client.get_financial_metrics("123450", "2025-06-30")[0]
+    assert may.report_period == june.report_period == "2024-12-31"   # same filed financials
+    assert may.price_to_earnings_ratio == pytest.approx(54 / 5.4)
+    assert june.price_to_earnings_ratio == pytest.approx(108 / 5.4)  # re-priced on 06-30
+    assert june.price_to_book_ratio == pytest.approx(108 / 50)
+    assert june.price_to_sales_ratio == pytest.approx(108 / (500 / 10))
+    assert june.market_cap == 1080
+
+
+def test_history_rows_keep_their_filing_date_valuation(tmp_path):
+    rows = _client(tmp_path, prices=DatedPrices()).get_financial_metrics("123450", "2025-06-30")
+    assert rows[1].report_period == "2024-09-30"
+    assert rows[1].market_cap == 540  # priced on its own filing date (2024-11-14), close 54
 
 
 # ---------------------------------------------------------------------------
@@ -601,4 +687,66 @@ def test_a_two_week_kospi_backtest_runs_end_to_end_with_mocks(tmp_path):
     assert result.benchmark == "KOSPI" and len(result.dates) == 10
     assert result.metrics.n_orders >= 1  # bullish views became a position
     assert all(r.positions.get("123450", 0) >= 0 for r in result.records)
-    assert FakeLLM.calls == 2  # 2 agents × 1 ticker; the unchanged snapshot is a cache hit on the second rebalance
+    # 2 agents × 1 ticker × 2 rebalances (06-02, 06-09): the newest row is re-priced
+    # on each evaluation date, so the second rebalance is a new prompt, not a cache hit.
+    assert FakeLLM.calls == 4
+
+    # The pre-run estimate printed by `aihf backtest` matches what actually happened.
+    from hedge_fund.backtesting.fund import build_schedule
+    from hedge_fund.run import llm_call_estimate
+    schedule = build_schedule(data, "KOSPI", "2025-06-02", "2025-06-13", spec.rebalance)
+    assert schedule.assessment_dates == ["2025-06-02", "2025-06-09"]
+    assert llm_call_estimate(spec, ["123450"], schedule)["calls"] == FakeLLM.calls
+
+
+def test_a_friday_start_asks_the_llm_on_trading_days_only(tmp_path):
+    """The 10-23 (Fri) → 10-26 (Mon) case: no call is made for Sunday 10-25."""
+    from pathlib import Path
+
+    from hedge_fund.backtesting import backtest_fund
+    from hedge_fund.data import CachedDataClient
+    from hedge_fund.fund import Fund, load_spec
+    from hedge_fund.llm import PromptCache
+    from hedge_fund.signals import GrahamAgent
+
+    class FakeLLM:
+        model = "fake"
+
+        def complete(self, system, user):
+            return '{"signal": "neutral", "confidence": 50, "reasoning": "x"}'
+
+    spec = load_spec(Path(__file__).resolve().parents[2] / "fund" / "example_kr.yaml")
+    spec = spec.model_copy(update={"strategies": [spec.strategies[0].model_copy(update={
+        "models": [m for m in spec.strategies[0].models if m.name == "graham"]})]})
+    asked: list[str] = []
+
+    class Spy(GrahamAgent):
+        def predict(self, ticker, date, data_client):
+            asked.append(date)
+            return super().predict(ticker, date, data_client)
+
+    fund = Fund(spec, blind=True, models={"deep-value": [Spy(llm=FakeLLM(), cache=PromptCache(tmp_path / "llm"), blind=True)]})
+    prices = PriceService([SeriesSource()], cache=DiskCache("p", root=tmp_path), completed_through=lambda: "2025-12-31")
+    data = CachedDataClient(_client(tmp_path, prices=prices), cache_dir=tmp_path / "cache")
+    result = backtest_fund(fund, "2025-06-06", "2025-06-20", data, ["123450"])   # Fri 06-06 start
+    assert sorted(set(asked)) == ["2025-06-06", "2025-06-09", "2025-06-16"]
+    assert set(asked) <= set(result.dates)
+
+
+def test_falling_back_to_naver_closes_is_a_warning(tmp_path, caplog):
+    class Down:
+        name = "pykrx"
+
+        def available(self):
+            return True
+
+        def bars(self, symbol, start, end):
+            raise RuntimeError("KRX login failed")
+
+    class Naver(SeriesSource):
+        name = "fdr"
+
+    service = PriceService([Down(), Naver()], cache=DiskCache("p", root=tmp_path), completed_through=lambda: "2025-06-30")
+    with caplog.at_level(logging.WARNING):
+        assert service.bars("123450", "2025-06-02", "2025-06-06")
+    assert "KRX 공식 종가와 다를 수 있습니다" in caplog.text

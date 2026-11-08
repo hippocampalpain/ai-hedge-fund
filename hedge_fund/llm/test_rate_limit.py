@@ -1,8 +1,9 @@
-"""Gemini free-tier guard: backoff on 429 / RESOURCE_EXHAUSTED, one call at a time."""
+"""Gemini free-tier guard: backoff on 429 / RESOURCE_EXHAUSTED and on transient
+5xx / deadline errors, one call at a time."""
 
 import pytest
 
-from hedge_fund.llm.client import ChatLLM, is_rate_limited, make_llm, RateLimitPolicy
+from hedge_fund.llm.client import ChatLLM, is_rate_limited, is_transient, make_llm, RateLimitPolicy
 
 
 class ResourceExhausted(Exception):
@@ -28,6 +29,83 @@ def test_server_retry_hint_is_honoured_and_capped():
     policy = RateLimitPolicy(base_delay=1, max_delay=60)
     assert 37 <= policy.delay(0, "429 ... Please retry in 37.2s.") < 39
     assert policy.delay(0, "Please retry in 900s") < 62
+
+
+class DeadlineExceeded(Exception):
+    pass
+
+
+@pytest.mark.parametrize("error", [
+    DeadlineExceeded("504 Deadline expired before operation could complete."),
+    RuntimeError("503 UNAVAILABLE: The model is overloaded."),
+    RuntimeError("502 Bad Gateway"),
+    TimeoutError("read timed out"),
+])
+def test_transient_errors_are_retried_with_exponential_backoff(error):
+    waits, calls = [], []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) < 3:
+            raise error
+        return "ok"
+
+    policy = RateLimitPolicy(base_delay=5, max_delay=120, sleep=waits.append)
+    assert policy.call(flaky) == "ok"
+    assert len(waits) == 2 and 5 <= waits[0] < 6 and 10 <= waits[1] < 11
+
+
+def test_transient_errors_stop_after_three_retries():
+    waits, calls = [], []
+
+    def always():
+        calls.append(1)
+        raise DeadlineExceeded("504 Deadline expired before operation could complete.")
+
+    policy = RateLimitPolicy(base_delay=1, sleep=waits.append)
+    with pytest.raises(DeadlineExceeded):
+        policy.call(always)
+    assert len(calls) == 4 and len(waits) == 3  # 1 call + 3 retries (1s, 2s, 4s)
+    assert [int(w) for w in waits] == [1, 2, 4]
+
+
+def test_429_and_transient_budgets_are_separate():
+    errors = iter([RuntimeError("504 Deadline expired"), RuntimeError("429 RESOURCE_EXHAUSTED"),
+                   RuntimeError("503 UNAVAILABLE"), RuntimeError("429 Too Many Requests")])
+
+    def flaky():
+        error = next(errors, None)
+        if error:
+            raise error
+        return "ok"
+
+    waits = []
+    policy = RateLimitPolicy(max_retries=2, transient_retries=2, base_delay=1, sleep=waits.append)
+    assert policy.call(flaky) == "ok" and len(waits) == 4
+
+
+def test_transient_detection():
+    assert is_transient(DeadlineExceeded("504 Deadline expired before operation could complete."))
+    assert is_transient(RuntimeError("500 internal"))
+    assert is_transient(ConnectionError("Connection reset by peer"))
+    assert not is_transient(RuntimeError("429 RESOURCE_EXHAUSTED"))  # its own budget
+    assert not is_transient(ValueError("400 INVALID_ARGUMENT: bad request"))
+    assert not is_transient(RuntimeError("403 PERMISSION_DENIED"))
+
+
+def test_transient_retries_come_from_the_environment(monkeypatch):
+    monkeypatch.setenv("LLM_TRANSIENT_RETRIES", "5")
+    assert RateLimitPolicy.from_env().transient_retries == 5
+    monkeypatch.delenv("LLM_TRANSIENT_RETRIES")
+    assert RateLimitPolicy.from_env().transient_retries == 3
+
+
+def test_gemini_request_deadline_is_longer_than_the_default(monkeypatch):
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    monkeypatch.delenv("GEMINI_TIMEOUT_SECONDS", raising=False)
+    assert make_llm("gemini-flash-latest")._chat.timeout == 180
+    monkeypatch.setenv("GEMINI_TIMEOUT_SECONDS", "240")
+    assert make_llm("gemini-flash-latest")._chat.timeout == 240
 
 
 def test_other_errors_are_not_retried():

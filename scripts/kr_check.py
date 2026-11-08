@@ -98,9 +98,12 @@ def main() -> None:
             print(f"\n  KRX 발표값 ({ref['date']}): PER {num(ref['PER'])}  PBR {num(ref['PBR'])}  "
                   f"EPS {num(ref['EPS'], 0)}  BPS {num(ref['BPS'], 0)}")
         print("\n  비교 방법")
-        print("  - 위 표의 PER/PBR은 '그 보고서 공시일의 종가' 기준, ROE·EPS는 최근 4개 분기 합(TTM)입니다.")
-        print("  - KRX/네이버 PER은 '오늘 종가 ÷ 직전 사업연도 EPS'라서 값이 다를 수 있습니다.")
-        print("    사업보고서 행(12-31)의 EPS가 KRX EPS와 가까우면 계산이 맞는 것입니다.")
+        print(f"  - 맨 위 행의 PER/PBR은 기준일({as_of}) 종가, 나머지 행은 그 보고서 공시일의 종가 기준입니다.")
+        print("    ROE·EPS는 최근 4개 분기 합(TTM)입니다.")
+        print("  - EPS = 지배주주순이익 ÷ 기간 가중평균 발행주식수(보통+우선, 자기주식 포함) — 와이즈리포트 정의.")
+        print("    KRX EPS는 회사가 공시한 기본주당이익(보통주)이라 조금 다릅니다.")
+        print("    사업보고서 행(12-31)의 EPS를 와이즈리포트 연간 EPS와 비교하세요.")
+        print("  - KRX/네이버 PER은 '오늘 종가 ÷ 직전 사업연도 EPS'라서 TTM PER과 다를 수 있습니다.")
         print("  - 부채비율은 네이버와 같은 정의(부채총계 ÷ 자본총계)로 % 표시했습니다.")
 
 

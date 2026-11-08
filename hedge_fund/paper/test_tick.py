@@ -296,3 +296,18 @@ def test_assessment_dates_name_the_refresh_and_the_new_decision(SPEC):
     fresh = DecisionRecord.model_construct(as_of="2025-01-21T13:00:00")
     state = FundState(cash=100_000, last_session="2025-01-21T13:00:00", pending=fresh)
     assert assessment_dates(state, "2025-01-21T13:05:00", spec) == ["2025-01-21T13:05:00"]
+
+
+def test_korean_paper_refresh_cutoff_is_the_previous_krx_trading_day(SPEC, monkeypatch):
+    """한국 모드: a Thursday 2025-10-02 decision run at the next KRX session
+    (Fri 10-10, after the 개천절·추석·한글날 holidays) needs no refresh — the
+    previous trading day is the decision day itself. US mode keeps the
+    calendar day before (10-09) as its cutoff."""
+    bench = {SPEC.benchmark: {"2025-10-01": 100.0, "2025-10-02": 101.0, "2025-10-10": 102.0}}
+    data = FakeDataClient(bench)
+    thursday = DecisionRecord.model_construct(as_of="2025-10-02")
+    state = FundState(cash=100_000, last_session="2025-10-02", pending=thursday)
+    assert assessment_dates(state, "2025-10-10", SPEC, data) == ["2025-10-09", "2025-10-10"]  # US
+    monkeypatch.setenv("DATA_PROVIDER", "kr")
+    assert assessment_dates(state, "2025-10-10", SPEC, data) == ["2025-10-10"]
+    assert assessment_dates(state, "2025-10-10", SPEC) == ["2025-10-09", "2025-10-10"]  # no data: calendar

@@ -215,3 +215,13 @@ def test_daily_clock_on_a_trading_grid_steps_back_to_the_previous_session():
     assert DailyClock(None, grid).previous("2024-06-10") == "2024-06-07"   # not Sunday 06-09
     assert DailyClock(None).previous("2024-06-10") == "2024-06-09"         # no grid: calendar day
     assert previous_session_on_grid(grid, "2024-06-06") == "2024-06-05"    # nothing earlier on the grid
+
+
+def test_korean_mode_daily_clock_skips_weekends_and_holidays(monkeypatch):
+    from hedge_fund.backtesting.test_fund import FakeDataClient
+    spec = _spec(rebalance="weekly", benchmark="KOSPI")
+    data = FakeDataClient({"KOSPI": {"2025-10-01": 1.0, "2025-10-02": 1.0, "2025-10-10": 1.0}})
+    assert clock_for(spec, data).previous("2025-10-10") == "2025-10-09"     # US: calendar day before
+    monkeypatch.setenv("DATA_PROVIDER", "kr")
+    assert clock_for(spec, data).previous("2025-10-10") == "2025-10-02"     # KRX: holidays skipped
+    assert clock_for(spec, data).previous("2025-10-02") == "2025-10-01"

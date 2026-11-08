@@ -754,3 +754,83 @@ def test_falling_back_to_naver_closes_is_a_warning(tmp_path, caplog):
 
 def test_korean_client_names_its_metrics_cache_version():
     assert KRDataClient.cache_version == "kr-2"
+
+
+# ---------------------------------------------------------------------------
+# Order path without an LLM: forced views → orders → fills at the pykrx close → P&L vs KOSPI
+# ---------------------------------------------------------------------------
+
+DAYS = ["2025-06-02", "2025-06-03", "2025-06-04", "2025-06-05", "2025-06-06",
+        "2025-06-09", "2025-06-10", "2025-06-11", "2025-06-12", "2025-06-13"]
+STOCK = dict(zip(DAYS, [50_000, 52_000, 51_000, 53_000, 54_000, 55_000, 56_000, 54_500, 53_000, 52_500]))
+KOSPI = dict(zip(DAYS, [2_500, 2_510, 2_490, 2_520, 2_530, 2_540, 2_550, 2_545, 2_535, 2_560]))
+
+
+class FakePykrx:
+    """Stands in for PykrxSource: the KRX closes above, nothing else."""
+
+    name = "pykrx"
+
+    def available(self):
+        return True
+
+    def bars(self, symbol, start, end):
+        series = KOSPI if symbol == "KOSPI" else STOCK
+        return [{"date": d, "open": c, "high": c, "low": c, "close": float(c), "volume": 10_000_000,
+                 "market_cap": c * 10.0, "shares": 10.0} for d, c in series.items() if start <= d <= end]
+
+
+def test_forced_views_trade_at_the_krx_close_and_score_against_kospi(tmp_path):
+    from pathlib import Path
+
+    from hedge_fund.backtesting import backtest_fund
+    from hedge_fund.data import CachedDataClient
+    from hedge_fund.fund import Fund, load_spec
+    from hedge_fund.models import Signal
+    from hedge_fund.signals import GrahamAgent
+
+    class Forced(GrahamAgent):
+        """Graham's slot with a fixed view: fully bullish in week 1, flat in week 2. No LLM."""
+
+        def predict(self, ticker, date, data_client):
+            value = 1.0 if date < "2025-06-09" else 0.0
+            return Signal(model_name="graham", ticker=ticker, date=date, value=value)
+
+    spec = load_spec(Path(__file__).resolve().parents[2] / "fund" / "example_kr.yaml")
+    spec = spec.model_copy(update={
+        "strategies": [spec.strategies[0].model_copy(update={
+            "models": [m for m in spec.strategies[0].models if m.name == "graham"]})],
+        # exact arithmetic: fill = close; 0.015% commission both ways, 0.2% tax on sells
+        "costs": spec.costs.model_copy(update={"spread_bps": 0, "impact_coefficient": 0,
+                                               "commission_rate": 0.00015, "sell_tax_rate": 0.002}),
+    })
+    fund = Fund(spec, models={"deep-value": [Forced(llm=type("NoLLM", (), {"model": "none"})())]})
+    prices = PriceService([FakePykrx()], cache=DiskCache("p", root=tmp_path), completed_through=lambda: "2025-12-31")
+    data = CachedDataClient(_client(tmp_path, prices=prices), cache_dir=tmp_path / "cache")
+
+    result = backtest_fund(fund, DAYS[0], DAYS[-1], data, ["123450"])
+    cycles = [r.executed for r in result.records if r.executed is not None]
+
+    # Monday 06-02 decides, Tuesday 06-03 fills at Tuesday's KRX close
+    buy = cycles[0]
+    assert (buy.as_of, buy.execution_as_of) == ("2025-06-02", "2025-06-03")
+    (fill,) = buy.fills
+    assert (fill.side, fill.price) == ("buy", 52_000)
+    assert fill.quantity == int(0.25 * 100_000_000 // 52_000)          # max_position_pct 25%
+    cash = 100_000_000 - fill.quantity * 52_000 * (1 + 0.00015)
+    assert buy.cash == pytest.approx(cash)
+
+    # Monday 06-09 goes flat, Tuesday 06-10 sells everything at 56,000, paying commission + tax
+    sell = cycles[1]
+    (out,) = sell.fills
+    assert (sell.execution_as_of, out.side, out.quantity, out.price) == ("2025-06-10", "sell", fill.quantity, 56_000)
+    cash += fill.quantity * 56_000 * (1 - 0.00015 - 0.002)
+    assert sell.cash == pytest.approx(cash) and sell.positions == {}
+
+    m = result.metrics
+    assert m.n_orders == 2
+    assert result.nav[-1] == pytest.approx(cash)
+    assert m.total_return_pct == pytest.approx(cash / 100_000_000 - 1, abs=1e-6)   # metrics round to 6 places
+    assert m.benchmark_return_pct == pytest.approx(2_560 / 2_500 - 1, abs=1e-6)
+    assert m.excess_return_pct == pytest.approx(m.total_return_pct - m.benchmark_return_pct, abs=1e-6)
+    assert m.trading_cost == pytest.approx(fill.quantity * (52_000 * 0.00015 + 56_000 * (0.00015 + 0.002)))

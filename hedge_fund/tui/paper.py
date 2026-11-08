@@ -516,7 +516,7 @@ class RunSessionScreen(Screen):
                     due = next_session(data, spec, state.last_session)
                     if due is None:  # the session slipped out from under the approval step
                         raise NothingDue(f"nothing due after {state.last_session}")
-                dates = assessment_dates(state, due, spec)
+                dates = assessment_dates(state, due, spec, data)
                 app.call_from_thread(self._begin_board, deployed, due, dates, state.pending)
                 if dates:
                     self._warm(spec, deployed.universe, dates)

@@ -28,11 +28,12 @@ from typing import Callable
 from hedge_fund.brokers.paper import PaperBroker
 from hedge_fund.data.bars import current_bar, is_intraday, is_last_bar, next_bar, previous_bar, session_date
 from hedge_fund.data.protocol import DataClient
+from hedge_fund.data.provider import is_kr_mode
 from hedge_fund.data.sessions import completed_through, NEW_YORK, previous_day, session_closes
 from hedge_fund.fund import Fund, FundSpec, TradingWindow
 from hedge_fund.paper.deployed import BROKER_FILE, load_deployed
 from hedge_fund.paper.ledger import Ledger
-from hedge_fund.pipeline.clock import Clock, LiveClock, Marked
+from hedge_fund.pipeline.clock import Clock, LiveClock, Marked, previous_benchmark_session
 from hedge_fund.pipeline.session import advance, FundHalted, FundState, is_rebalance_session, next_state, SessionRecord
 from hedge_fund.scorecard import current_allocation
 
@@ -125,23 +126,27 @@ def following_session(spec: FundSpec, after: str | None, now: datetime) -> str:
     return f"{day.isoformat()} close"
 
 
-def previous_session(session: str, spec: FundSpec) -> str:
+def previous_session(session: str, spec: FundSpec, data_client: DataClient | None = None) -> str:
     """The session before *session* on the fund's own grid: the bar before
-    a bar, the calendar day before a date (what `execute_decision` uses as
-    the refresh cutoff)."""
+    a bar; for a date, the calendar day before — or, in Korean mode with a
+    data client, the benchmark's previous trading day — exactly what
+    `execute_decision` uses as the refresh cutoff (`clock_for`)."""
     if is_intraday(session):
         return previous_bar(session, spec.interval_seconds, spec.window)
+    if data_client is not None and is_kr_mode():
+        return previous_benchmark_session(data_client, spec.benchmark, session)
     return previous_day(session)
 
 
-def assessment_dates(state: FundState, session: str, spec: FundSpec) -> list[str]:
+def assessment_dates(state: FundState, session: str, spec: FundSpec,
+                     data_client: DataClient | None = None) -> list[str]:
     """The sessions the analysts are asked about when *session* is run from
     *state*: the session before it, to refresh a pending decision made
     earlier than that (`execute_decision` sizes from the refreshed views),
     and *session* itself when it opens a rebalance period (`advance` then
     makes a new decision)."""
     dates: list[str] = []
-    before = previous_session(session, spec)
+    before = previous_session(session, spec, data_client)
     if state.pending is not None and before != state.pending.as_of:
         dates.append(before)
     if is_rebalance_session(session, state.last_session, spec.rebalance):
